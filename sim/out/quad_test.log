@@ -1,0 +1,24 @@
+VCD info: dumpfile quad_core.vcd opened for output.
+============================================================
+ Quad-Core RISC-V OoO SoC — Full System Integration Test
+============================================================
+ Architecture: 4x RV32I OoO cores, MESI coherence
+ Cache: 4KB L1I + 4KB L1D per core, 16KB shared L2
+ Memory: 64KB BRAM
+============================================================
+
+[T=30000] Reset released
+[Cycle 100] Cores active: 1111 | Mem busy: 0 | Mem accesses: 0
+[Cycle 200] Cores active: 1111 | Mem busy: 0 | Mem accesses: 0
+[Cycle 300] Cores active: 1111 | Mem busy: 0 | Mem accesses: 0
+[Cycle 400] Cores active: 1111 | Mem busy: 0 | Mem accesses: 0
+
+============================================================
+ Integration Test Complete
+   Cycles run:      500
+   Memory accesses: 0
+   Core status:     1111
+============================================================
+ View quad_core.vcd in GTKWave for detailed analysis
+============================================================
+C:\Users\ymrat\OneDrive\Desktop\project\sim\..\tb\tb_quad_core.v:83: $finish called at 5030000 (1ps)

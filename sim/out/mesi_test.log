@@ -1,0 +1,50 @@
+VCD info: dumpfile mesi_coherence.vcd opened for output.
+============================================================
+ MESI Cache Coherence Protocol — State Transition Tests
+============================================================
+
+--- Processor-Side Transitions ---
+[MESI Protocol] State: 00 -> 00 | proc_ev: 0 (v:1) | bus_ev: 000 (v:0)
+  PASS: I + PrRd (shared) -> S, BusRd
+[MESI Protocol] State: 00 -> 00 | proc_ev: 0 (v:1) | bus_ev: 000 (v:0)
+  PASS: I + PrRd (no share) -> E, BusRd
+[MESI Protocol] State: 00 -> 00 | proc_ev: 1 (v:1) | bus_ev: 000 (v:0)
+  PASS: I + PrWr -> M, BusRdX
+[MESI Protocol] State: 01 -> 00 | proc_ev: 0 (v:1) | bus_ev: 000 (v:0)
+  PASS: S + PrRd -> S (hit, no bus)
+[MESI Protocol] State: 01 -> 01 | proc_ev: 1 (v:1) | bus_ev: 000 (v:0)
+  PASS: S + PrWr -> M, BusUpgr
+[MESI Protocol] State: 10 -> 01 | proc_ev: 0 (v:1) | bus_ev: 000 (v:0)
+  PASS: E + PrRd -> E (hit, no bus)
+[MESI Protocol] State: 10 -> 10 | proc_ev: 1 (v:1) | bus_ev: 000 (v:0)
+  PASS: E + PrWr -> M (silent upgrade)
+[MESI Protocol] State: 11 -> 10 | proc_ev: 0 (v:1) | bus_ev: 000 (v:0)
+  PASS: M + PrRd -> M (hit, no bus)
+[MESI Protocol] State: 11 -> 11 | proc_ev: 1 (v:1) | bus_ev: 000 (v:0)
+  PASS: M + PrWr -> M (hit, no bus)
+
+--- Bus-Side (Snoop) Transitions ---
+[MESI Protocol] State: 11 -> 11 | proc_ev: 1 (v:0) | bus_ev: 001 (v:1)
+  PASS: M + BusRd -> S, flush+supply
+[MESI Protocol] State: 11 -> 11 | proc_ev: 1 (v:0) | bus_ev: 010 (v:1)
+  PASS: M + BusRdX -> I, flush+supply
+[MESI Protocol] State: 10 -> 11 | proc_ev: 1 (v:0) | bus_ev: 001 (v:1)
+  PASS: E + BusRd -> S, supply data
+[MESI Protocol] State: 10 -> 10 | proc_ev: 1 (v:0) | bus_ev: 010 (v:1)
+  PASS: E + BusRdX -> I, invalidate
+[MESI Protocol] State: 01 -> 10 | proc_ev: 1 (v:0) | bus_ev: 001 (v:1)
+  PASS: S + BusRd -> S (no change)
+[MESI Protocol] State: 01 -> 01 | proc_ev: 1 (v:0) | bus_ev: 010 (v:1)
+  PASS: S + BusRdX -> I, invalidate
+[MESI Protocol] State: 01 -> 01 | proc_ev: 1 (v:0) | bus_ev: 011 (v:1)
+  PASS: S + BusUpgr -> I, invalidate
+[MESI Protocol] State: 00 -> 01 | proc_ev: 1 (v:0) | bus_ev: 001 (v:1)
+  PASS: I + BusRd -> I (no effect)
+[MESI Protocol] State: 00 -> 00 | proc_ev: 1 (v:0) | bus_ev: 010 (v:1)
+  PASS: I + BusRdX -> I (no effect)
+
+============================================================
+ Results: 18 PASSED, 0 FAILED (of 18 total)
+ >>> ALL MESI TESTS PASSED! <<<
+============================================================
+C:\Users\ymrat\OneDrive\Desktop\project\sim\..\tb\tb_mesi_coherence.v:207: $finish called at 435000 (1ps)

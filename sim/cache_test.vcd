@@ -1,0 +1,327 @@
+$date
+	Tue Sep 29 14:08:47 2026
+$end
+$version
+	Icarus Verilog
+$end
+$timescale
+	1ps
+$end
+$scope module tb_cache $end
+$var wire 2 ! snoop_resp [1:0] $end
+$var wire 1 " snoop_data_valid $end
+$var wire 256 # snoop_data [255:0] $end
+$var wire 32 $ cpu_rdata [31:0] $end
+$var wire 1 % cpu_ack $end
+$var wire 256 & bus_wdata [255:0] $end
+$var wire 1 ' bus_req $end
+$var wire 3 ( bus_cmd [2:0] $end
+$var wire 32 ) bus_addr [31:0] $end
+$var reg 1 * bus_ack $end
+$var reg 1 + bus_grant $end
+$var reg 256 , bus_rdata [255:0] $end
+$var reg 1 - clk $end
+$var reg 32 . cpu_addr [31:0] $end
+$var reg 3 / cpu_mem_type [2:0] $end
+$var reg 1 0 cpu_req $end
+$var reg 32 1 cpu_wdata [31:0] $end
+$var reg 1 2 cpu_wr $end
+$var reg 1 3 rst_n $end
+$var reg 32 4 snoop_addr [31:0] $end
+$var reg 3 5 snoop_cmd [2:0] $end
+$var reg 1 6 snoop_valid $end
+$var integer 32 7 fail_count [31:0] $end
+$var integer 32 8 pass_count [31:0] $end
+$scope module dut $end
+$var wire 1 * bus_ack $end
+$var wire 1 + bus_grant $end
+$var wire 256 9 bus_rdata [255:0] $end
+$var wire 1 - clk $end
+$var wire 32 : cpu_addr [31:0] $end
+$var wire 3 ; cpu_mem_type [2:0] $end
+$var wire 1 0 cpu_req $end
+$var wire 32 < cpu_wdata [31:0] $end
+$var wire 1 2 cpu_wr $end
+$var wire 1 3 rst_n $end
+$var wire 32 = snoop_addr [31:0] $end
+$var wire 3 > snoop_cmd [2:0] $end
+$var wire 1 6 snoop_valid $end
+$var wire 21 ? tag [20:0] $end
+$var wire 6 @ index [5:0] $end
+$var parameter 32 A CACHE_SETS $end
+$var parameter 32 B INDEX_BITS $end
+$var parameter 3 C STATE_ALLOCATE $end
+$var parameter 3 D STATE_COMPARE_TAG $end
+$var parameter 3 E STATE_IDLE $end
+$var parameter 3 F STATE_SNOOP_CHECK $end
+$var parameter 3 G STATE_SNOOP_RESPOND $end
+$var parameter 3 H STATE_WRITEBACK $end
+$var parameter 32 I TAG_BITS $end
+$var parameter 32 J WAYS $end
+$var reg 32 K bus_addr [31:0] $end
+$var reg 3 L bus_cmd [2:0] $end
+$var reg 1 ' bus_req $end
+$var reg 256 M bus_wdata [255:0] $end
+$var reg 1 % cpu_ack $end
+$var reg 32 N cpu_rdata [31:0] $end
+$var reg 3 O next_state [2:0] $end
+$var reg 256 P snoop_data [255:0] $end
+$var reg 1 " snoop_data_valid $end
+$var reg 2 Q snoop_resp [1:0] $end
+$var reg 3 R state [2:0] $end
+$upscope $end
+$scope task auto_bus_respond $end
+$var reg 256 S line_data [255:0] $end
+$upscope $end
+$upscope $end
+$enddefinitions $end
+$comment Show the parameter values. $end
+$dumpall
+b10 J
+b10101 I
+b10 H
+b101 G
+b100 F
+b0 E
+b1 D
+b11 C
+b110 B
+b1000000 A
+$end
+#0
+$dumpvars
+bx S
+b0 R
+bx Q
+bx P
+b0 O
+bx N
+bx M
+bx L
+bx K
+b0 @
+b0 ?
+b0 >
+b0 =
+b0 <
+b10 ;
+b0 :
+b0 9
+b0 8
+b0 7
+06
+b0 5
+b0 4
+03
+02
+b0 1
+00
+b10 /
+b0 .
+0-
+b0 ,
+0+
+0*
+bx )
+bx (
+0'
+bx &
+0%
+bx $
+bx #
+x"
+bx !
+$end
+#5000
+1-
+#10000
+0-
+#15000
+1-
+#20000
+0-
+13
+#25000
+1-
+#30000
+b1 O
+b10 ?
+0-
+10
+b1000000000000 .
+b1000000000000 :
+#35000
+1%
+b0 O
+b1 R
+1-
+#40000
+0-
+#45000
+b1 O
+0%
+b0 R
+1-
+#50000
+0-
+#55000
+1%
+b0 O
+b1 R
+1-
+#60000
+0-
+#65000
+b1 O
+0%
+b0 R
+1-
+#70000
+b0 O
+0-
+b1 8
+00
+#75000
+1-
+#80000
+0-
+#85000
+1-
+#90000
+b1 O
+0-
+10
+#95000
+1%
+b0 O
+b1 R
+1-
+#100000
+0-
+#105000
+b1 O
+0%
+b0 R
+1-
+#110000
+b0 O
+0-
+b10 8
+00
+#115000
+1-
+#120000
+0-
+#125000
+1-
+#130000
+b1 O
+0-
+12
+10
+b11001010111111101011101010111110 1
+b11001010111111101011101010111110 <
+#135000
+1%
+b0 O
+b1 R
+1-
+#140000
+0-
+#145000
+b1 O
+0%
+b0 R
+1-
+#150000
+b0 O
+0-
+b11 8
+02
+00
+#155000
+1-
+#160000
+0-
+#165000
+1-
+#170000
+b100 O
+0-
+16
+b1 5
+b1 >
+b1000000000000 4
+b1000000000000 =
+#175000
+b101 O
+b100 R
+1-
+#180000
+0-
+#185000
+b0 O
+b101 R
+1-
+#190000
+b0 O
+0-
+b100 8
+06
+#195000
+b0 R
+1-
+#200000
+0-
+#205000
+1-
+#210000
+b100 O
+0-
+16
+b10 5
+b10 >
+#215000
+b101 O
+b100 R
+1-
+#220000
+0-
+#225000
+b0 O
+b101 R
+1-
+#230000
+b0 O
+0-
+b101 8
+06
+#235000
+b0 R
+1-
+#240000
+0-
+#245000
+1-
+#250000
+0-
+#255000
+1-
+#260000
+0-
+#265000
+1-
+#270000
+0-
+#275000
+1-
+#280000
+0-
+#285000
+1-
+#290000
+0-
+#295000
+1-
+#300000
+0-
