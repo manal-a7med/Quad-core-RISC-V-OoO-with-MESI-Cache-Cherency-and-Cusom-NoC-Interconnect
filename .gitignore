@@ -1,0 +1,19 @@
+﻿# Simulation waveforms and outputs
+*.vcd
+*.vvp
+*.log
+sim/out/
+sim/*.vcd
+
+# Python cache
+__pycache__/
+*.py[cod]
+*.class
+.venv/
+env/
+
+# Editor / OS files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
