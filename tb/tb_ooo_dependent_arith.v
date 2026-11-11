@@ -109,7 +109,7 @@ module tb_ooo_dependent_arith;
         if (!rst_n) begin
             dcache_ack   <= 0;
             dcache_rdata <= 0;
-        end else if (dcache_req) begin
+        end else if (dcache_req && !dcache_ack) begin   // one answer per request
             dcache_ack   <= 1;
             dcache_rdata <= 32'd0;
         end else begin

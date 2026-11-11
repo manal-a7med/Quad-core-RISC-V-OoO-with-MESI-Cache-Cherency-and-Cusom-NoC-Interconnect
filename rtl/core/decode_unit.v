@@ -31,6 +31,7 @@ module decode_unit (
     output reg         is_amo,        // RV32A: LR/SC/AMO (word); goes to the LSU as a load
     output reg  [3:0]  amo_op,        // `AMO_* code
     output reg         is_fence,      // FENCE / FENCE.I
+    output reg         is_muldiv,     // RV32M; alu_op[2:0] = funct3
     output reg         decoded_valid
 );
 
@@ -54,12 +55,17 @@ module decode_unit (
         is_csr = 1'b0; csr_op = 2'b00; csr_uimm = 1'b0;
         is_ecall = 1'b0; is_ebreak = 1'b0; is_mret = 1'b0;
         is_amo = 1'b0; amo_op = `AMO_NONE; is_fence = 1'b0;
+        is_muldiv = 1'b0;
         decoded_valid = instr_valid && (instr != 32'h00000013);
 
         case(opcode)
             7'b0110011: begin // R-type
                 uses_rs1 = 1'b1; uses_rs2 = 1'b1; writes_rd = (rd != 5'd0);
                 fu_type = `FU_ALU;
+                if (instr[31:25] == 7'b0000001) begin  // RV32M: MUL..REMU
+                    is_muldiv = 1'b1;
+                    alu_op    = {1'b0, instr[14:12]};
+                end else
                 case (instr[14:12]) // funct3
                     3'b000: alu_op = instr[30] ? `ALU_SUB : `ALU_ADD;  // ADD/SUB
                     3'b001: alu_op = `ALU_SLL;

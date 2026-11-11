@@ -196,6 +196,21 @@ def mutants():
     return out
 
 
+def bench_file(p):
+    """<bench> <PASS|...> key=value ... lines (scripts/bench.sh) -> {bench: {key: int}}"""
+    out = {}
+    for l in read(p).splitlines():
+        f = l.split()
+        if len(f) < 2 or l.startswith("#"):
+            continue
+        d = {"ok": f[1] == "PASS"}
+        for kv in f[2:]:
+            k, _, v = kv.partition("=")
+            d[k] = int(v) if v.isdigit() else None
+        out[f[0]] = d
+    return out
+
+
 def yosys_ok(v):
     t = read(f"{v}/yosys_check.txt")
     err = re.search(r"ERROR: (.*)", t)
@@ -210,6 +225,9 @@ ya, _ = yosys_ok("after")
 x7 = synth_x7()
 area, demos, sisa = soc_area(), soc_logs(), soc_isa()
 ua = isa("after", "rv32ua")
+um = isa("after", "rv32um")
+perf_p3, perf_now = bench_file("perf/p3.txt"), bench_file("perf/full.txt")
+perf_cfg = {c: bench_file(f"perf/{c}.txt") for c in ("no_bp", "inorder", "simple", "msi")}
 lit, cohr, muts = litmus_rows(demos["litmus"]), coh_runs(), mutants()
 _lr = re.search(r"litmus: (\d+) runs", "\n".join(demos["litmus"]["uart"]))
 LIT_RUNS = _lr[1] if _lr else "?"
@@ -353,6 +371,50 @@ if area:
     soc_lut_pct = f'{100*area["LUT"]/CAP["LUT"]:.0f}%'
 else:
     area_bars, area_rows, soc_lut_pct = "", "", "n/a"
+um_chips = "".join(
+    f'<span class="chip {"ok" if v == "PASS" else "bad"}" title="{t}: {v}">{t}</span>' for t, v in sorted(um.items()))
+
+# Performance: speed-up over the P3 design, and what each feature contributes
+def _reg(d, b):
+    return (d.get(b) or {}).get("region")
+perf_names = [b for b in perf_now if perf_now[b]["ok"] and _reg(perf_now, b)]
+sp = {b: _reg(perf_p3, b) / _reg(perf_now, b) for b in perf_names if _reg(perf_p3, b)}
+sp_max = max(sp.values(), default=1)
+def _acc(d):
+    return f'{100 * (1 - d["mispredicts"] / d["branches"]):.1f}%' if d.get("branches") else ""
+def _perf_row(b):
+    now, mt = perf_now[b], not perf_now[b].get("instret")
+    name = f'{esc(b)} <span class="muted">(4 harts)</span>' if mt else esc(b)
+    ins = "" if mt else f'{now["instret"]:,}'
+    cpi = "" if mt else f'{now["region"] / now["instret"]:.2f}'
+    return (f'<tr><td class="mono">{name}</td><td class="num">{ins}</td>'
+            f'<td class="num">{_reg(perf_p3, b):,}</td><td class="num">{now["region"]:,}</td><td class="num">{cpi}</td>'
+            f'<td><div class="bar tight"><span class="bt"><i style="width:{100*sp[b]/sp_max:.1f}%"></i></span>'
+            f'<span class="bn">{sp[b]:.2f}x</span></div></td><td class="num">{_acc(now)}</td></tr>')
+perf_rows = "".join(_perf_row(b) for b in perf_names if b in sp)
+def _rel(c, b):
+    r = _reg(perf_cfg[c], b)
+    return f'{r / _reg(perf_now, b):.2f}x' if r else ""
+abl_rows = "".join(
+    f'<tr><td class="mono">{esc(b)}</td><td class="num">{_reg(perf_now, b):,}</td>'
+    f'<td class="num">{_rel("inorder", b)}</td><td class="num">{_rel("no_bp", b)}</td>'
+    f'<td class="num">{_rel("simple", b)}</td></tr>' for b in perf_names if _reg(perf_cfg["simple"], b))
+def _g(d, b, k):
+    v = (d.get(b) or {}).get(k)
+    return v if v is not None else 0
+msi_rows = "".join(
+    f'<tr><td class="mono">{esc(b)}</td><td class="num">{_g(perf_now, b, "busupgr"):,}</td>'
+    f'<td class="num">{_g(perf_cfg["msi"], b, "busupgr"):,}</td>'
+    f'<td class="num">{_g(perf_now, b, "bustx"):,}</td><td class="num">{_g(perf_cfg["msi"], b, "bustx"):,}</td>'
+    f'<td class="num">{100 * (_reg(perf_cfg["msi"], b) / _reg(perf_now, b) - 1):+.1f}%</td></tr>'
+    for b in perf_names if _reg(perf_cfg["msi"], b) and max(_g(perf_cfg["msi"], b, "busupgr"), _g(perf_now, b, "busupgr")) >= 100)
+dhry = perf_now.get("dhrystone") or {}
+dhry_sp = f'{sp["dhrystone"]:.1f}x' if "dhrystone" in sp else "n/a"
+dhry_cpi = f'{dhry["region"] / dhry["instret"]:.2f}' if dhry.get("instret") else "n/a"
+dhry_cpi_p3 = (lambda d: f'{d["region"] / d["instret"]:.2f}' if d.get("instret") else "n/a")(perf_p3.get("dhrystone") or {})
+# Dhrystone: 500 runs in the timed region; 1757 Dhrystones/s is 1 DMIPS
+dmips = lambda d: f'{1e6 / (d["region"] / 500) / 1757:.2f}' if d.get("region") else "n/a"
+
 ua_chips = "".join(
     f'<span class="chip {"ok" if v == "PASS" else "bad"}" title="{t}: {v}">{t}</span>' for t, v in sorted(ua.items()))
 lit_rows = "".join(
@@ -471,11 +533,12 @@ code {{ font-family: var(--f-mono); font-size: .88em; }}
 .bar .bt i {{ display: block; height: 100%; background: var(--accent); }}
 .bar .bn {{ font-family: var(--f-mono); font-variant-numeric: tabular-nums; text-align: right; }}
 .cols.top {{ align-items: start; }}
+.bar.tight {{ grid-template-columns: minmax(60px, 1fr) 3.6rem; margin: 0; min-width: 130px; }}
 </style>
 <div class="wrap">
 <header>
-  <span class="eyebrow">Quad-core RISC-V OoO with MESI · Phases P0 to P3</span>
-  <h1>Correctness, multicore and FPGA results</h1>
+  <span class="eyebrow">Quad-core RISC-V OoO with MESI · Phases P0 to P4</span>
+  <h1>Correctness, multicore, performance and FPGA results</h1>
   <p class="muted">Every number on this page comes from a simulation, test or synthesis run on the
   RTL. The baseline is the imported design; "fixed" is the current core. The multicore, atomics and
   FPGA sections run the whole four-core SoC.</p>
@@ -492,6 +555,12 @@ code {{ font-family: var(--f-mono); font-size: .88em; }}
       <span class="v"><span class="from">{"yes" if yb else "no"}</span><span class="arrow">→</span>{"yes" if ya else "no"}</span></div>
     <div class="stat"><span class="k">rv32ua atomics tests</span>
       <span class="v">{npass(ua)}/{len(ua)}</span></div>
+    <div class="stat"><span class="k">rv32um multiply/divide tests</span>
+      <span class="v">{npass(um)}/{len(um)}</span></div>
+    <div class="stat"><span class="k">Dhrystone, cycles per instruction</span>
+      <span class="v"><span class="from">{dhry_cpi_p3}</span><span class="arrow">→</span>{dhry_cpi}</span></div>
+    <div class="stat"><span class="k">Dhrystone speed-up in P4</span>
+      <span class="v">{dhry_sp}</span></div>
     <div class="stat"><span class="k">ISA programs on the 4-core SoC</span>
       <span class="v">{npass(sisa)}/{len(sisa)}</span></div>
     <div class="stat"><span class="k">Injected coherence bugs caught</span>
@@ -520,6 +589,8 @@ code {{ font-family: var(--f-mono); font-size: .88em; }}
   </div>
   <div><span class="lbl">Atomics (rv32ua, added in P3; the baseline has no atomics) · {npass(ua)}/{len(ua)}</span>
     <div class="chips">{ua_chips}</div></div>
+  <div><span class="lbl">Multiply/divide (rv32um, added in P4; the baseline has no M extension) · {npass(um)}/{len(um)}</span>
+    <div class="chips">{um_chips}</div></div>
 </section>
 
 <section>
@@ -604,8 +675,39 @@ code {{ font-family: var(--f-mono); font-size: .88em; }}
 </section>
 
 <section>
+  <h2>Performance</h2>
+  <p>The riscv-tests benchmarks, compiled with GCC -O2 and run on a cycle-accurate model of the
+  four-core SoC (Verilator, same RTL). "P3 design" is the core before the performance work of
+  phase P4: instruction fetch at one instruction per cycle, branch prediction (two-bit counters,
+  return address stack, a small target buffer for indirect jumps), loads that no longer freeze the
+  issue queue, wakeup bypass, back-to-back cache accesses and the M extension. Cycles are those of
+  each benchmark's timed region. Dhrystone: {dmips(perf_p3.get("dhrystone") or {{}})} to
+  {dmips(dhry)} DMIPS/MHz.</p>
+  <div class="scroll"><table>
+    <thead><tr><th>Benchmark</th><th class="num">Instructions</th><th class="num">P3 design, cycles</th>
+      <th class="num">Now, cycles</th><th class="num">Cycles per instruction</th><th>Speed-up</th>
+      <th class="num">Branches predicted correctly</th></tr></thead>
+    <tbody>{perf_rows}</tbody></table></div>
+  <p>What each part contributes: the same benchmarks on builds with one feature switched off
+  (<code>make ablation</code>). The columns give the run time relative to the full design.
+  Prediction matters most. Out-of-order issue adds less, because this core dispatches and issues
+  only one instruction per cycle.</p>
+  <div class="scroll"><table>
+    <thead><tr><th>Benchmark</th><th class="num">Full design, cycles</th><th class="num">In-order issue</th>
+      <th class="num">No branch prediction</th><th class="num">Neither</th></tr></thead>
+    <tbody>{abl_rows}</tbody></table></div>
+  <p>MESI against MSI: without the Exclusive state a core that reads a line nobody else holds
+  must still announce its first store on the bus (BusUpgr). The table lists the benchmarks with
+  at least 100 such upgrades in either build.</p>
+  <div class="scroll"><table>
+    <thead><tr><th>Benchmark</th><th class="num">BusUpgr, MESI</th><th class="num">BusUpgr, MSI</th>
+      <th class="num">Bus transactions, MESI</th><th class="num">MSI</th><th class="num">Run time with MSI</th></tr></thead>
+    <tbody>{msi_rows}</tbody></table></div>
+</section>
+
+<section>
   <h2>ISA tests on the full SoC</h2>
-  <p>The rv32ui and rv32ua tests, the system test (CSRs, traps) and a 24 KB memory stress test, run
+  <p>The rv32ui, rv32um and rv32ua tests, the system test (CSRs, traps) and a 24 KB memory stress test, run
   through the caches and the coherence bus on the four-core SoC.</p>
   <div class="chips">{sisa_chips}</div>
 </section>
@@ -627,7 +729,7 @@ code {{ font-family: var(--f-mono); font-size: .88em; }}
 
 <footer>
   <span>Regenerate: <code>sh scripts/viz/collect.sh &lt;riscv-tests checkout&gt; &amp;&amp; python3 scripts/viz/make_results.py</code></span>
-  <span>Sources: <code>review/tb_repro.v</code>, <code>verif/riscv-tests/</code>, <code>verif/demo/ooo_demo.S</code>, <code>verif/trace.vh</code>, <code>sw/</code>, <code>verif/soc/</code>, <code>verif/coherence/</code>, <code>build/synth_fpga.log</code> (<code>make synth-fpga</code>)</span>
+  <span>Sources: <code>review/tb_repro.v</code>, <code>verif/riscv-tests/</code>, <code>verif/demo/ooo_demo.S</code>, <code>verif/trace.vh</code>, <code>sw/</code>, <code>verif/soc/</code>, <code>verif/coherence/</code>, <code>scripts/bench.sh</code>, <code>scripts/ablation.sh</code>, <code>build/synth_fpga.log</code> (<code>make synth-fpga</code>)</span>
 </footer>
 </div>
 """

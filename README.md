@@ -1,7 +1,7 @@
 # Quad-core RISC-V OoO with MESI cache coherence
 
-A four-core RV32IA (+ Zicsr, machine mode) out-of-order processor (rename,
-8-entry issue queue, 16-entry ROB, load/store queue) with private L1 caches,
+A four-core RV32IMA (+ Zicsr, machine mode) out-of-order processor (branch
+prediction, rename, 8-entry issue queue, 16-entry ROB, load/store queue) with private L1 caches,
 a shared L2, and MESI coherence over a snooping bus, plus a small I/O block
 (UART, LEDs, 7-segment display). A 2x2 mesh NoC with directory coherence
 is planned. Targets: FPGA (Artix-7 XC7A100T) first, then an ASIC flow.
@@ -20,7 +20,7 @@ With a RISC-V GCC (`sudo apt-get install gcc-riscv64-unknown-elf`) and a
 [riscv-tests](https://github.com/riscv-software-src/riscv-tests) checkout:
 
 ```
-make isa RISCV_TESTS=../riscv-tests   # rv32ui + rv32ua + system tests on one core
+make isa RISCV_TESTS=../riscv-tests   # rv32ui, rv32um, rv32ua + system tests on one core
 make soc-isa                          # the same programs on the 4-core SoC
 make soc-run PROG=hello               # C demo on the SoC: "hello from hart N"
 make soc-run PROG=parsum              # 4-hart parallel array sum
@@ -34,6 +34,9 @@ make fpga-sim PROG=hello              # board-level simulation of fpga_top
 `make bench RISCV_TESTS=../riscv-tests` builds the riscv-tests benchmarks
 (dhrystone, qsort, rsort, median, towers, ...) for the SoC and runs them on a
 Verilator model of it (needs `verilator`); numbers are kept in `results/`.
+`make ablation RISCV_TESTS=../riscv-tests` runs them on five builds: the full
+design, without branch prediction, with in-order issue, with neither, and
+with MSI instead of MESI (`CFG_*` macros in the RTL, measurement only).
 
 `make coh-random` (no RISC-V GCC needed) drives random loads, stores and
 atomics into the four L1 data caches of the real memory system and checks

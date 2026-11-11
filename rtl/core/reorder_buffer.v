@@ -24,6 +24,8 @@ module reorder_buffer (
     input  wire        alloc_is_store,
     input  wire        alloc_is_load,
     input  wire        alloc_trap,     // ECALL/EBREAK/MRET/illegal: done, traps at commit
+    input  wire        alloc_is_call,  // JAL/JALR that links (return address stack)
+    input  wire        alloc_is_ret,   // JALR through a link register
     output wire [3:0]  alloc_idx,      // ROB index assigned
     output wire [3:0]  head_idx,       // oldest in-flight entry (age reference)
     output wire        rob_full,
@@ -45,6 +47,8 @@ module reorder_buffer (
     output reg         commit_is_store,
     output reg  [31:0] commit_result,
     output reg  [3:0]  commit_rob_idx,
+    output reg         commit_is_call, // valid with commit_valid
+    output reg         commit_is_ret,
 
     // Flush interface
     output reg         flush_out,
@@ -68,6 +72,8 @@ module reorder_buffer (
     reg        rob_is_branch   [0:`ROB_DEPTH-1];
     reg        rob_is_store    [0:`ROB_DEPTH-1];
     reg        rob_is_load     [0:`ROB_DEPTH-1];
+    reg        rob_is_call     [0:`ROB_DEPTH-1];
+    reg        rob_is_ret      [0:`ROB_DEPTH-1];
     reg        rob_mispredicted[0:`ROB_DEPTH-1];
     reg [31:0] rob_branch_tgt  [0:`ROB_DEPTH-1];
     reg        rob_exception   [0:`ROB_DEPTH-1];
@@ -141,6 +147,8 @@ module reorder_buffer (
                 rob_is_branch[tail]   <= alloc_is_branch;
                 rob_is_store[tail]    <= alloc_is_store;
                 rob_is_load[tail]     <= alloc_is_load;
+                rob_is_call[tail]     <= alloc_is_call && !alloc_trap;
+                rob_is_ret[tail]      <= alloc_is_ret  && !alloc_trap;
                 rob_mispredicted[tail]<= 1'b0;
                 rob_exception[tail]   <= alloc_trap;
                 rob_result[tail]      <= 32'd0;
@@ -175,6 +183,8 @@ module reorder_buffer (
                 commit_is_store   <= rob_is_store[head];
                 commit_result     <= rob_result[head];
                 commit_rob_idx    <= head;
+                commit_is_call    <= rob_is_call[head];
+                commit_is_ret     <= rob_is_ret[head];
 
                 // Invalidate all entries (flush younger speculative instructions)
                 for (k = 0; k < `ROB_DEPTH; k = k + 1) begin
@@ -211,6 +221,8 @@ module reorder_buffer (
                     commit_is_store   <= rob_is_store[head];
                     commit_result     <= rob_result[head];
                     commit_rob_idx    <= head;
+                    commit_is_call    <= rob_is_call[head];
+                    commit_is_ret     <= rob_is_ret[head];
                     rob_valid[head]   <= 1'b0;
                     head  <= (head + 1) & (`ROB_DEPTH - 1);
                 end
