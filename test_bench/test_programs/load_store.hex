@@ -1,0 +1,29 @@
+// Load/Store test program (RV32I machine code in hex)
+// Tests: SW, LW, SH, LH, SB, LB with sign extension
+
+00500093  // ADDI x1, x0, 5       -> x1 = 5
+0FF00113  // ADDI x2, x0, 255     -> x2 = 255
+10000193  // ADDI x3, x0, 256     -> x3 = 256
+
+// Store word, then load it back
+00102023  // SW x1, 0(x0)          -> Mem[0] = 5
+00002203  // LW x4, 0(x0)         -> x4 = 5
+
+// Store at offset, load back
+00202223  // SW x2, 4(x0)         -> Mem[4] = 255
+00402283  // LW x5, 4(x0)         -> x5 = 255
+
+// Store halfword, load with sign extension
+00201023  // SH x2, 0(x0)         -> Mem[0] lower half = 255
+00001303  // LH x6, 0(x0)         -> x6 = 255 (sign extended)
+
+// Store byte, load with sign extension
+FFF00393  // ADDI x7, x0, -1      -> x7 = 0xFFFFFFFF
+00700023  // SB x7, 0(x0)         -> Mem[0] byte 0 = 0xFF
+00000403  // LB x8, 0(x0)         -> x8 = 0xFFFFFFFF (sign ext of 0xFF)
+00004483  // LBU x9, 0(x0)        -> x9 = 0x000000FF (zero ext)
+
+00000013  // NOP
+00000013  // NOP
+00000013  // NOP
+00000013  // NOP
