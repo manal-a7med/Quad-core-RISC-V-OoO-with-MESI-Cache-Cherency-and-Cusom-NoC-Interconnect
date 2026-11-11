@@ -1,0 +1,35 @@
+VCD info: dumpfile bus_arbiter.vcd opened for output.
+============================================================
+ Bus Arbiter — Round-Robin Tests
+============================================================
+  PASS: No requests -> no grant
+  INFO: Single req[0], grant=0001 busy=1 owner=0
+  PASS: Single requester core 0
+[Bus Arbiter] Bus released by core 0
+  INFO: Dual req[0,2], grant=0001 owner=2
+[Bus Arbiter] Bus released by core 2
+  INFO: After release, grant=0100 owner=2
+[Bus Arbiter] Bus released by core 2
+  --- All 4 cores requesting ---
+  INFO: grant=0100 owner=3 busy=1
+[Bus Arbiter] Bus released by core 3
+  INFO: grant=1000 owner=3 busy=1
+[Bus Arbiter] Bus released by core 3
+  INFO: grant=1000 owner=0 busy=1
+[Bus Arbiter] Bus released by core 0
+  INFO: grant=0001 owner=0 busy=1
+[Bus Arbiter] Bus released by core 0
+  INFO: grant=0001 owner=1 busy=1
+[Bus Arbiter] Bus released by core 1
+  INFO: grant=0010 owner=1 busy=1
+[Bus Arbiter] Bus released by core 1
+  INFO: grant=0010 owner=2 busy=1
+[Bus Arbiter] Bus released by core 2
+  INFO: grant=0100 owner=2 busy=1
+[Bus Arbiter] Bus released by core 2
+  PASS: No grant when no requests
+
+============================================================
+ Results: 3 PASSED, 0 FAILED
+============================================================
+C:\Users\ymrat\OneDrive\Desktop\project\sim\..\tb\tb_bus_arbiter.v:102: $finish called at 330000 (1ps)

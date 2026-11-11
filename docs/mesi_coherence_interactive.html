@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8" />
+  <title>MESI Cache Coherence Interactive Animator</title>
+  <script src="https://www.gstatic.com/antigravity/web/dev/tailwindcss.min.js"></script>
+  <style>
+    @keyframes pulseGlow {
+      0%, 100% { transform: scale(1); opacity: 0.95; }
+      50% { transform: scale(1.06); opacity: 1; }
+    }
+    .pulse-badge { animation: pulseGlow 1.6s infinite ease-in-out; }
+    .bus-packet { transition: all 0.45s cubic-bezier(0.4, 0, 0.2, 1); }
+  </style>
+</head>
+<body class="bg-[var(--background)] text-[var(--foreground)] antialiased p-5">
+  <div class="max-w-5xl mx-auto bg-[var(--card)] text-[var(--foreground)] border border-[var(--border)] rounded-xl p-5 shadow-sm space-y-4">
+    <!-- Header & Controls -->
+    <div class="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--border)] pb-3">
+      <div>
+        <h2 class="text-lg font-bold tracking-tight">Quad-Core RISC-V OoO SoC — Interactive MESI Coherence Animator</h2>
+        <p class="text-xs text-[var(--muted-foreground)]" id="step-subtitle">Step 0: Initial Cold Reset</p>
+      </div>
+      <div class="flex items-center gap-2">
+        <button onclick="prevStep()" class="px-3 py-1.5 rounded-lg border border-[var(--border)] bg-[var(--secondary)] text-[var(--secondary-foreground)] text-xs font-semibold hover:opacity-90">
+          ◀ Prev
+        </button>
+        <button id="play-btn" onclick="togglePlay()" class="px-3.5 py-1.5 rounded-lg bg-sky-600 text-white text-xs font-semibold hover:bg-sky-500">
+          ⏸ Auto-Play
+        </button>
+        <button onclick="nextStep()" class="px-3 py-1.5 rounded-lg border border-[var(--border)] bg-[var(--secondary)] text-[var(--secondary-foreground)] text-xs font-semibold hover:opacity-90">
+          Next ▶
+        </button>
+      </div>
+    </div>
+
+    <!-- MESI State Legend -->
+    <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
+      <div class="flex items-center gap-2 p-2 rounded-lg border border-[var(--border)]">
+        <span class="px-2 py-0.5 rounded font-bold bg-amber-500 text-black">M</span>
+        <span><b>Modified:</b> Dirty, Only Copy</span>
+      </div>
+      <div class="flex items-center gap-2 p-2 rounded-lg border border-[var(--border)]">
+        <span class="px-2 py-0.5 rounded font-bold bg-emerald-500 text-black">E</span>
+        <span><b>Exclusive:</b> Clean, Only Copy</span>
+      </div>
+      <div class="flex items-center gap-2 p-2 rounded-lg border border-[var(--border)]">
+        <span class="px-2 py-0.5 rounded font-bold bg-blue-500 text-white">S</span>
+        <span><b>Shared:</b> Clean, Shared Copy</span>
+      </div>
+      <div class="flex items-center gap-2 p-2 rounded-lg border border-[var(--border)]">
+        <span class="px-2 py-0.5 rounded font-bold bg-gray-600 text-gray-200">I</span>
+        <span><b>Invalid:</b> Empty / Stale</span>
+      </div>
+    </div>
+
+    <!-- 4 Cores + L1D Caches Row -->
+    <div class="grid grid-cols-2 sm:grid-cols-4 gap-3" id="cores-grid"></div>
+
+    <!-- Snooping Coherence Bus Bar -->
+    <div id="bus-bar" class="rounded-xl border-2 border-sky-500/60 p-3 text-center transition-all">
+      <div class="flex items-center justify-center gap-2">
+        <span class="text-xs font-bold uppercase tracking-wider text-sky-400" id="bus-cmd-badge">BUS IDLE</span>
+        <span class="text-xs font-medium" id="bus-desc">No active bus transaction</span>
+      </div>
+      <div class="mt-2 flex flex-wrap items-center justify-center gap-2" id="packet-pills"></div>
+    </div>
+
+    <!-- Shared L2 Cache & Main Memory Row -->
+    <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+      <div id="l2-card" class="rounded-xl border border-[var(--border)] p-3 flex items-center justify-between">
+        <div>
+          <div class="text-xs font-bold text-blue-400">SHARED L2 CACHE (16 KB, 4-Way Inclusive)</div>
+          <div class="text-xs text-[var(--muted-foreground)]" id="l2-status">Status: Empty</div>
+        </div>
+        <div class="text-right">
+          <div class="text-xs text-[var(--muted-foreground)]">Line [0x0100]</div>
+          <div class="text-sm font-mono font-bold" id="l2-data">--</div>
+        </div>
+      </div>
+
+      <div id="mem-card" class="rounded-xl border border-[var(--border)] p-3 flex items-center justify-between">
+        <div>
+          <div class="text-xs font-bold text-emerald-400">MAIN MEMORY (64 KB BRAM)</div>
+          <div class="text-xs text-[var(--muted-foreground)]" id="mem-status">Memory Controller + Arbiter</div>
+        </div>
+        <div class="text-right">
+          <div class="text-xs text-[var(--muted-foreground)]">Mem[0x0100]</div>
+          <div class="text-sm font-mono font-bold" id="mem-data">42</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Beginner Explanation Box -->
+    <div class="rounded-xl border border-sky-500/40 p-3.5 space-y-1">
+      <div class="flex items-center justify-between">
+        <span class="text-xs font-bold text-sky-400 uppercase" id="instr-banner">CPU Instruction</span>
+        <span class="text-xs font-mono text-[var(--muted-foreground)]" id="step-counter">Step 1 / 7</span>
+      </div>
+      <p class="text-sm leading-relaxed" id="explanation-text"></p>
+    </div>
+  </div>
+
+  <script>
+    const STEPS = [
+      {
+        title: "Step 0: Initial Cold Reset — All L1 Caches Invalid (I)",
+        instr: "System Reset (rst_n = 0 -> 1)",
+        activeCore: -1,
+        busCmd: "NONE",
+        busDesc: "Bus Idle — All L1D caches start Invalid (I)",
+        cores: [
+          { state: "I", data: "--", snoop: "NONE", action: "Idle" },
+          { state: "I", data: "--", snoop: "NONE", action: "Idle" },
+          { state: "I", data: "--", snoop: "NONE", action: "Idle" },
+          { state: "I", data: "--", snoop: "NONE", action: "Idle" }
+        ],
+        l2: { status: "Empty (Cold)", data: "--", dirty: false },
+        mem: { status: "Ready", data: "42 (0x2A)", active: false },
+        packets: [],
+        explain: "At startup, all 4 RISC-V OoO cores have empty L1 Data Caches marked INVALID (I). Main Memory holds the shared variable at 0x0100 = 42. Any read or write must go through the Snooping Coherence Bus."
+      },
+      {
+        title: "Step 1: Core 0 Cold Read Miss (I → E via BusRd)",
+        instr: "Core 0: LW x1, 0x100(x0)   [Read Miss]",
+        activeCore: 0,
+        busCmd: "BusRd",
+        busDesc: "Core 0 broadcasts BusRd(0x0100) • Snoops: All Miss (shared=0) • Main Memory fills L2 & Core 0",
+        cores: [
+          { state: "E", data: "42", snoop: "REQ",  action: "Read Miss (I → E)" },
+          { state: "I", data: "--", snoop: "MISS", action: "Snoop Miss" },
+          { state: "I", data: "--", snoop: "MISS", action: "Snoop Miss" },
+          { state: "I", data: "--", snoop: "MISS", action: "Snoop Miss" }
+        ],
+        l2: { status: "Filled (Clean)", data: "42", dirty: false },
+        mem: { status: "Read 256-bit Line", data: "42 (Fetched)", active: true },
+        packets: ["Core 0 ➔ Bus: BusRd(0x0100)", "Cores 1..3: SNOOP_NONE", "Mem ➔ L2 ➔ Core 0: Data = 42"],
+        explain: "Core 0 executes LW from 0x0100 and misses. It broadcasts BusRd on the coherence bus. The Snoop Controller checks Cores 1–3; none have the line (shared=0). Main Memory supplies 42 to L2 and Core 0. Because Core 0 is the sole owner of this clean line, it enters EXCLUSIVE (E)."
+      },
+      {
+        title: "Step 2: Core 1 Read Miss — Shared Copy (E → S & I → S)",
+        instr: "Core 1: LW x1, 0x100(x0)   [Read Miss, Snoop HIT]",
+        activeCore: 1,
+        busCmd: "BusRd",
+        busDesc: "Core 1 broadcasts BusRd(0x0100) • Core 0 replies SNOOP_HIT & downgrades E → S • L2 Hit supplies 42",
+        cores: [
+          { state: "S", data: "42", snoop: "HIT",  action: "Downgrade E → S" },
+          { state: "S", data: "42", snoop: "REQ",  action: "Read Miss (I → S)" },
+          { state: "I", data: "--", snoop: "MISS", action: "Snoop Miss" },
+          { state: "I", data: "--", snoop: "MISS", action: "Snoop Miss" }
+        ],
+        l2: { status: "L2 Cache Hit!", data: "42", dirty: false },
+        mem: { status: "Idle (Saved Mem Access)", data: "42", active: false },
+        packets: ["Core 1 ➔ Bus: BusRd(0x0100)", "Core 0 ➔ Bus: SNOOP_HIT (shared=1)", "L2 ➔ Core 1: Data = 42"],
+        explain: "Core 1 reads the same address 0x0100. Core 0 snoops the BusRd request, raises SNOOP_HIT (shared=1), and downgrades its state from EXCLUSIVE (E) to SHARED (S). Shared L2 hits and supplies 42 to Core 1 without touching Main Memory!"
+      },
+      {
+        title: "Step 3: Cores 2 & 3 Read 0x0100 — All 4 Cores Share Line (S, S, S, S)",
+        instr: "Cores 2 & 3: LW x1, 0x100(x0)   [All 4 Cores Share]",
+        activeCore: 2,
+        busCmd: "BusRd",
+        busDesc: "Cores 2 & 3 issue BusRd(0x0100) • Sharers reply SNOOP_HIT • All 4 Cores now hold 42 in SHARED (S)",
+        cores: [
+          { state: "S", data: "42", snoop: "HIT", action: "Keep S (42)" },
+          { state: "S", data: "42", snoop: "HIT", action: "Keep S (42)" },
+          { state: "S", data: "42", snoop: "REQ", action: "Read Miss (I → S)" },
+          { state: "S", data: "42", snoop: "REQ", action: "Read Miss (I → S)" }
+        ],
+        l2: { status: "L2 Cache Hit!", data: "42", dirty: false },
+        mem: { status: "Idle", data: "42", active: false },
+        packets: ["Cores 2,3 ➔ Bus: BusRd(0x0100)", "L2 ➔ Cores 2,3: Data = 42"],
+        explain: "Cores 2 and 3 also read 0x0100. Because the data is clean (unmodified), all 4 cores can safely cache simultaneous copies in the SHARED (S) state and perform 1-cycle L1D read hits concurrently."
+      },
+      {
+        title: "Step 4: Core 0 Writes Shared Line — Upgrade (S → M via BusUpgr)",
+        instr: "Core 0: SW x5, 0x108(x0) <= 60   [Write Hit on Shared → BusUpgr]",
+        activeCore: 0,
+        busCmd: "BusUpgr",
+        busDesc: "Core 0 broadcasts BusUpgr • Cores 1, 2, 3 invalidate their copies (S → I, SNOOP_ACK) • Core 0 → M",
+        cores: [
+          { state: "M", data: "60*", snoop: "REQ", action: "Upgrade S → M" },
+          { state: "I", data: "XX",  snoop: "ACK", action: "Invalidated (S → I)" },
+          { state: "I", data: "XX",  snoop: "ACK", action: "Invalidated (S → I)" },
+          { state: "I", data: "XX",  snoop: "ACK", action: "Invalidated (S → I)" }
+        ],
+        l2: { status: "Valid (Stale = 42)", data: "42", dirty: false },
+        mem: { status: "Idle (Stale = 42)", data: "42", active: false },
+        packets: ["Core 0 ➔ Bus: BusUpgr(0x0100)", "Bus ➔ Cores 1,2,3: Invalidate (S → I)", "Cores 1,2,3 ➔ Bus: SNOOP_ACK"],
+        explain: "Core 0 writes 60 to line 0x0100. Because Core 0 already has the line in SHARED (S), it sends a lightweight BusUpgr command instead of fetching data. Cores 1, 2, and 3 immediately invalidate their copies (S → I) so they never read stale data, and Core 0 upgrades to MODIFIED (M)!"
+      },
+      {
+        title: "Step 5: Core 1 Reads Modified Line — Cache-to-Cache Transfer (SNOOP_HITM)",
+        instr: "Core 1: LW x6, 0x108(x0)   [Read Miss → SNOOP_HITM Intervention!]",
+        activeCore: 1,
+        busCmd: "HITM",
+        busDesc: "Core 1 issues BusRd • Core 0 intercepts with SNOOP_HITM & streams dirty data (60) to Core 1 & L2!",
+        cores: [
+          { state: "S", data: "60", snoop: "HITM", action: "Supply 60 (M → S)" },
+          { state: "S", data: "60", snoop: "REQ",  action: "Receive 60 (I → S)" },
+          { state: "I", data: "XX", snoop: "MISS", action: "Invalid" },
+          { state: "I", data: "XX", snoop: "MISS", action: "Invalid" }
+        ],
+        l2: { status: "Updated via BusFlush!", data: "60*", dirty: true },
+        mem: { status: "Idle", data: "42", active: false },
+        packets: ["Core 1 ➔ Bus: BusRd(0x0100)", "Core 0 ➔ Core 1: SNOOP_HITM (Data = 60)", "Core 0 ➔ L2: BusFlush (60*)"],
+        explain: "Core 1 reads 0x0108, which is INVALID in Core 1 and stale in Memory. Core 0 (in MODIFIED state) intercepts the BusRd with SNOOP_HITM ('Hit Modified'), streaming the dirty value 60 directly Core-to-Core to Core 1 AND updating Shared L2! Both Core 0 and Core 1 become SHARED (S)."
+      },
+      {
+        title: "Step 6: Core 3 Write Miss — Read-Exclusive (BusRdX + Invalidation)",
+        instr: "Core 3: SW x3, 0x120(x0) <= 52   [Write Miss → BusRdX]",
+        activeCore: 3,
+        busCmd: "BusRdX",
+        busDesc: "Core 3 broadcasts BusRdX • Invalidates all other copies (→ I) • Core 3 becomes sole owner in MODIFIED (M)",
+        cores: [
+          { state: "I", data: "XX",  snoop: "ACK", action: "Invalidated (→ I)" },
+          { state: "I", data: "XX",  snoop: "ACK", action: "Invalidated (→ I)" },
+          { state: "I", data: "XX",  snoop: "ACK", action: "Invalidated (→ I)" },
+          { state: "M", data: "52*", snoop: "REQ", action: "Write Miss (I → M)" }
+        ],
+        l2: { status: "Valid (Dirty)", data: "60*", dirty: true },
+        mem: { status: "Idle", data: "42", active: false },
+        packets: ["Core 3 ➔ Bus: BusRdX (Read-Exclusive)", "Bus ➔ Cores 0..2: Invalidate (→ I)", "L2 ➔ Core 3: Line Allocated in M"],
+        explain: "Core 3 writes to a cache line that is currently INVALID (I) in its L1D. It issues BusRdX (Read-Exclusive), which fetches the line AND invalidates all other cores in a single transaction so Core 3 transitions directly I → M."
+      }
+    ];
+
+    const STATE_BADGE = {
+      M: "bg-amber-500 text-black border-amber-400",
+      E: "bg-emerald-500 text-black border-emerald-400",
+      S: "bg-blue-500 text-white border-blue-400",
+      I: "bg-gray-700 text-gray-300 border-gray-600"
+    };
+
+    let idx = 0;
+    let timer = null;
+
+    function render() {
+      const s = STEPS[idx];
+      document.getElementById("step-subtitle").textContent = s.title;
+      document.getElementById("instr-banner").textContent = s.instr;
+      document.getElementById("step-counter").textContent = `Step ${idx + 1} / ${STEPS.length}`;
+      document.getElementById("explanation-text").textContent = s.explain;
+      document.getElementById("bus-cmd-badge").textContent = `BUS: ${s.busCmd}`;
+      document.getElementById("bus-desc").textContent = s.busDesc;
+
+      const grid = document.getElementById("cores-grid");
+      grid.innerHTML = s.cores.map((c, i) => {
+        const isAct = (s.activeCore === i);
+        return `
+          <div class="rounded-xl border ${isAct ? 'border-sky-400 ring-2 ring-sky-500/30' : 'border-[var(--border)]'} p-3 space-y-2 transition-all">
+            <div class="flex items-center justify-between">
+              <span class="text-xs font-bold ${isAct ? 'text-sky-400' : ''}">Core ${i} L1D ${isAct ? '★' : ''}</span>
+              <span class="text-[11px] font-mono px-1.5 py-0.5 rounded border ${c.snoop === 'HITM' ? 'border-amber-400 text-amber-400' : c.snoop === 'ACK' ? 'border-rose-400 text-rose-400' : 'border-[var(--border)] text-[var(--muted-foreground)]'}">
+                Snoop: ${c.snoop}
+              </span>
+            </div>
+            <div class="rounded-lg border p-2 text-center ${STATE_BADGE[c.state]} ${isAct ? 'pulse-badge' : ''}">
+              <div class="text-sm font-extrabold">State: ${c.state}</div>
+              <div class="text-xs font-mono font-semibold">Data: ${c.data}</div>
+            </div>
+            <div class="text-[11px] text-center text-[var(--muted-foreground)] font-medium">${c.action}</div>
+          </div>
+        `;
+      }).join("");
+
+      const pills = document.getElementById("packet-pills");
+      pills.innerHTML = s.packets.map(p => `
+        <span class="bus-packet text-xs font-mono font-semibold px-2.5 py-1 rounded-full bg-sky-500/20 border border-sky-400/50 text-sky-300">
+          ⚡ ${p}
+        </span>
+      `).join("");
+
+      document.getElementById("l2-status").textContent = `Status: ${s.l2.status}`;
+      document.getElementById("l2-data").textContent = s.l2.data;
+      document.getElementById("mem-status").textContent = s.mem.status;
+      document.getElementById("mem-data").textContent = s.mem.data;
+    }
+
+    function nextStep() { idx = (idx + 1) % STEPS.length; render(); }
+    function prevStep() { idx = (idx - 1 + STEPS.length) % STEPS.length; render(); }
+    function togglePlay() {
+      const btn = document.getElementById("play-btn");
+      if (timer) {
+        clearInterval(timer);
+        timer = null;
+        btn.textContent = "▶ Auto-Play";
+      } else {
+        timer = setInterval(nextStep, 2600);
+        btn.textContent = "⏸ Pause";
+      }
+    }
+
+    render();
+    timer = setInterval(nextStep, 2600);
+  </script>
+</body>
+</html>

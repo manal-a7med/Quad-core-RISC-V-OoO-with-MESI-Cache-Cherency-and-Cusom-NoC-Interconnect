@@ -1,0 +1,20 @@
+// Basic ALU test program (RV32I machine code in hex)
+// Tests: ADDI, ADD, SUB, AND, OR, XOR, SLT
+// Expected results noted in comments
+
+00500093  // ADDI x1, x0, 5       -> x1 = 5
+00A00113  // ADDI x2, x0, 10      -> x2 = 10
+002081B3  // ADD  x3, x1, x2      -> x3 = 15
+40208233  // SUB  x4, x1, x2      -> x4 = -5 (0xFFFFFFFB)
+0020F2B3  // AND  x5, x1, x2      -> x5 = 0
+0020E333  // OR   x6, x1, x2      -> x6 = 15
+0020C3B3  // XOR  x7, x1, x2      -> x7 = 15
+0020A433  // SLT  x8, x1, x2      -> x8 = 1 (5 < 10)
+FFF00493  // ADDI x9, x0, -1      -> x9 = -1 (0xFFFFFFFF)
+00100513  // ADDI x10, x0, 1      -> x10 = 1
+00A4A5B3  // SLT  x11, x9, x10    -> x11 = 1 (-1 < 1)
+00A4B633  // SLTU x12, x9, x10    -> x12 = 0 (unsigned: 0xFFFFFFFF > 1)
+00000013  // NOP
+00000013  // NOP
+00000013  // NOP
+00000013  // NOP
