@@ -7,12 +7,15 @@
 #   make soc-isa     the same programs on the full 4-core SoC with caches (after make isa)
 #   make sw          Build the demo programs in sw/ (hello, parsum) to build/sw/
 #   make soc-run PROG=hello   Run a demo program on the full SoC (UART printed)
+#   make fpga-sim PROG=hello  Board-level simulation of fpga_top (UART decoded from the pin)
+#   make fpga PROG=hello      Vivado bitstream for the Nexys A7-100T (CLKOUT_DIV=20: 50 MHz)
+#   make program              Load build/vivado/fpga_top.bit onto the board
 #   make lint        Verilator lint of the core (errors fail; warnings listed)
-#   make lint-soc    Verilator lint of quad_core_top (passes once P2 removes array resets)
+#   make lint-soc    Verilator lint of quad_core_top (errors fail)
 #   make synth       Yosys generic synthesis of one core (fast check, used by CI)
-#   make synth-soc   Yosys generic synthesis of quad_core_top (slow until the
-#                    caches and memory map to BRAM in P2)
-#   make synth-fpga  Yosys synth_xilinx of fpga_top, prints a resource report
+#   make synth-soc   Yosys generic synthesis of quad_core_top
+#   make synth-fpga  Yosys synth_xilinx of fpga_top (about 15 min), prints LUT/FF/BRAM
+#                    use against the XC7A100T
 #   make synth-fpga-core  Artix-7 LUT/FF estimate for one core (used by results)
 #   make results     Regenerate docs/results/index.html (RISCV_TESTS=<checkout>)
 #   make animate     MESI terminal walkthrough + animated GIF
@@ -43,7 +46,7 @@ SOC_RTL   = $(CORE_RTL) $(CACHE_RTL) $(COH_RTL) $(MEM_RTL) $(IO_RTL) rtl/top/qua
 
 TESTS = mesi arbiter cache core dep corner quad
 
-.PHONY: all sim $(addprefix sim-,$(TESTS)) sim-repro isa synth soc-isa sw soc-run lint lint-soc synth-soc synth-fpga results animate gui clean help
+.PHONY: all sim $(addprefix sim-,$(TESTS)) sim-repro isa synth soc-isa sw soc-run fpga-sim fpga program lint lint-soc synth-soc synth-fpga results animate gui clean help
 
 all: sim
 
@@ -123,6 +126,25 @@ $(OUT_DIR)/sw/%.line.hex: sw/%/*.c sw/common/*
 $(OUT_DIR)/soc.vvp: $(SOC_RTL) verif/soc/tb_soc.v | $(OUT_DIR)
 	$(IVERILOG) $(INC_FLAGS) -o $@ $(SOC_RTL) verif/soc/tb_soc.v
 
+# Board-level simulation of fpga_top: program baked into memory, UART decoded
+# from the serial pin, 7-segment display read back from the pins
+fpga-sim: $(OUT_DIR)/sw/$(PROG).line.hex
+	$(IVERILOG) $(INC_FLAGS) -DNO_UART_ECHO -DMEM_INIT_FILE=\"$(OUT_DIR)/sw/$(PROG).line.hex\" -o $(OUT_DIR)/fpga_$(PROG).vvp \
+	    $(SOC_RTL) rtl/top/fpga_top.v verif/soc/tb_fpga.v
+	$(VVP) -n $(OUT_DIR)/fpga_$(PROG).vvp | tee $(OUT_DIR)/sw/$(PROG).fpga.log
+	@grep -q "RESULT PASS" $(OUT_DIR)/sw/$(PROG).fpga.log
+	@if [ -f sw/$(PROG)/expect.txt ]; then $(PYTHON) scripts/check_uart.py sw/$(PROG)/expect.txt $(OUT_DIR)/sw/$(PROG).fpga.log; fi
+
+# Vivado build for the Nexys A7-100T (bitstream with PROG preloaded), and
+# programming the board over USB (needs Vivado on PATH)
+VIVADO ?= vivado
+CLKOUT_DIV ?= 20
+fpga: $(OUT_DIR)/sw/$(PROG).line.hex
+	$(VIVADO) -mode batch -nojournal -log $(OUT_DIR)/vivado.log -source synth/build.tcl \
+	    -tclargs $(OUT_DIR)/sw/$(PROG).line.hex $(CLKOUT_DIV)
+program:
+	$(VIVADO) -mode batch -nojournal -nolog -source synth/program.tcl -tclargs $(OUT_DIR)/vivado/fpga_top.bit
+
 soc-run: $(OUT_DIR)/sw/$(PROG).line.hex $(OUT_DIR)/soc.vvp
 	$(VVP) -n $(OUT_DIR)/soc.vvp +hex=$(OUT_DIR)/sw/$(PROG).hex | tee $(OUT_DIR)/sw/$(PROG).log
 	@grep -q "RESULT PASS" $(OUT_DIR)/sw/$(PROG).log
@@ -138,6 +160,7 @@ synth-soc: | $(OUT_DIR)
 
 synth-fpga: | $(OUT_DIR)
 	$(YOSYS) -q -l $(OUT_DIR)/synth_fpga.log -p "read_verilog -DSYNTHESIS -I rtl/core -I rtl/cache $(SOC_RTL) rtl/top/fpga_top.v; synth_xilinx -family xc7 -top fpga_top; stat"
+	@$(PYTHON) scripts/fpga_report.py $(OUT_DIR)/synth_fpga.log
 
 results:
 	sh scripts/viz/collect.sh $(RISCV_TESTS)

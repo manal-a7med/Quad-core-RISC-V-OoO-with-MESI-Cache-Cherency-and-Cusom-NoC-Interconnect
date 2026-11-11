@@ -47,4 +47,19 @@ for v in before after; do
 done
 [ -f "$ROOT/build/synth.log" ] && cp "$ROOT/build/synth.log" "$V/synth_generic.log" || true
 [ -f "$ROOT/build/synth_fpga_core.log" ] && cp "$ROOT/build/synth_fpga_core.log" "$V/synth_x7.log" || true
+
+# P2: the full SoC. C demos on the 4-core SoC and on the board-level model
+# of fpga_top, the ISA programs on the SoC, and the Artix-7 estimate of
+# fpga_top (make synth-fpga, slow: run it first to include it).
+# The ISA programs must have been built (the rv32ui runs above do that).
+mkdir -p "$V/soc"
+for p in hello parsum; do
+  make -C "$ROOT" -s soc-run PROG=$p > /dev/null 2>&1 || true
+  make -C "$ROOT" -s fpga-sim PROG=$p > /dev/null 2>&1 || true
+  cp "$ROOT/build/sw/$p.log" "$ROOT/build/sw/$p.fpga.log" "$V/soc/" 2>/dev/null || true
+done
+# (REUSE_SOC_ISA=1 reuses build/soc/summary.txt from an earlier make soc-isa)
+[ -n "$REUSE_SOC_ISA" ] || sh "$ROOT/scripts/soc_isa.sh" > /dev/null 2>&1 || true
+cp "$ROOT/build/soc/summary.txt" "$V/soc/isa_summary.txt" 2>/dev/null || true
+[ -f "$ROOT/build/synth_fpga.log" ] && cp "$ROOT/build/synth_fpga.log" "$V/soc/synth_fpga.log" || true
 echo "collected into $V"

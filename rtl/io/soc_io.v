@@ -13,7 +13,8 @@
 //   0x8000_0014  BOOT     (RW) scratch word cleared by reset; hart 0 sets it
 //                               when start-up is done (other harts wait on it)
 // One request is served at a time, round-robin across cores.
-// In simulation each transmitted byte is also printed with $write.
+// In simulation each transmitted byte is also printed with $write (unless
+// NO_UART_ECHO is defined, e.g. when a testbench decodes the serial line).
 // ============================================================================
 module soc_io #(parameter integer CLKS_PER_BIT = 434) (
     input  wire          clk,
@@ -72,7 +73,9 @@ module soc_io #(parameter integer CLKS_PER_BIT = 434) (
                               uart_data <= d[7:0]; uart_start <= 1'b1;
                               ack[cur] <= 1'b1; busy <= 1'b0;
 `ifdef SIM
+`ifndef NO_UART_ECHO
                               $write("%c", d[7:0]);
+`endif
 `endif
                           end
                     3'd1: begin rdata <= {31'd0, uart_busy || uart_start}; ack[cur] <= 1'b1; busy <= 1'b0; end

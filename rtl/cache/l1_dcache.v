@@ -133,6 +133,7 @@ module l1_dcache (
     // ------------------------------------------------------------------
     // Data RAM: port A = CPU read/write, port B = snoop read
     // ------------------------------------------------------------------
+    (* ram_style = "block" *)            // shallow and wide: tools would pick LUT RAM
     reg [255:0] data_ram [0:2*SETS-1];
     reg [255:0] q, qs;
 
@@ -182,7 +183,7 @@ module l1_dcache (
         bus_req    = 1'b0;
         bus_cmd    = `BUS_NONE;
         bus_addr   = 32'd0;
-        bus_wdata  = 256'd0;
+        bus_wdata  = q;                  // only used with BusFlush (the victim line)
         d_we = 1'b0; d_way = pend_way; d_be = 32'hFFFF_FFFF; d_wdata = bus_rdata;
 
         case (state)
@@ -225,7 +226,6 @@ module l1_dcache (
                 bus_req   = 1'b1;
                 bus_cmd   = `BUS_FLUSH;
                 bus_addr  = {pend_tag, idx, 5'b0};
-                bus_wdata = q;
                 if (bus_ack) next_state = ST_WB_PAUSE;
             end
 
@@ -268,11 +268,72 @@ module l1_dcache (
     end
 
     // ------------------------------------------------------------------
-    // State, LRU, request latch, snoop responses
+    // State and LRU write ports: one for the CPU side, one for snoops.
+    // (Two explicit ports with per-entry decode, instead of several
+    // variable-index writes, keep this small in synthesis.)
     // ------------------------------------------------------------------
     reg        snoop_done_r;
     reg [31:0] last_snoop_addr;
     reg [2:0]  last_snoop_cmd;
+    wire       snoop_new = snoop_valid &&
+                           (!snoop_done_r || (snoop_addr != last_snoop_addr) || (snoop_cmd != last_snoop_cmd));
+
+    reg       c_st_we, c_st_way, lru_we, lru_val;
+    reg [1:0] c_st_val;
+    always @(*) begin
+        c_st_we = 1'b0; c_st_way = pend_way; c_st_val = M;
+        lru_we  = 1'b0; lru_val  = ~pend_way;
+        case (state)
+            ST_COMPARE:
+                if (!snoop_valid && cache_hit && (!req_wr_r || store_hit_ok)) begin
+                    lru_we = 1'b1; lru_val = ~hit_way;
+                    if (req_wr_r) begin c_st_we = 1'b1; c_st_way = hit_way; c_st_val = M; end
+                end
+            ST_WRITEBACK:
+                if (bus_ack) begin c_st_we = 1'b1; c_st_val = I; end
+            ST_ALLOCATE:
+                if (bus_ack) begin
+                    c_st_we = 1'b1; lru_we = 1'b1;
+                    c_st_val = req_wr_r ? M : ((bus_shared === 1'b1) ? S : E);
+                end
+            ST_UPGRADE:
+                if (bus_ack) begin c_st_we = 1'b1; lru_we = 1'b1; c_st_val = M; end
+            default: ;
+        endcase
+    end
+
+    reg       s_st_we;
+    reg [1:0] s_st_val;
+    always @(*) begin
+        s_st_we = 1'b0; s_st_val = I;
+        if (snoop_new && snoop_hit)
+            case (snoop_cmd)
+                `BUS_READ:                       begin s_st_we = 1'b1; s_st_val = S; end
+                `BUS_READX, `BUS_UPGR, `BUS_INVAL: begin s_st_we = 1'b1; s_st_val = I; end
+                default: ;
+            endcase
+    end
+
+    wire [IDX_BITS:0] c_st_entry = {c_st_way, idx};
+    wire [IDX_BITS:0] s_st_entry = {snoop_way, s_idx};
+    integer e;
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            state_bits <= {4*SETS{1'b0}};       // all Invalid
+            lru_bits   <= {SETS{1'b0}};
+        end else begin
+            for (e = 0; e < 2*SETS; e = e + 1) begin
+                if (s_st_we && s_st_entry == e)      state_bits[2*e +: 2] <= s_st_val;
+                else if (c_st_we && c_st_entry == e) state_bits[2*e +: 2] <= c_st_val;
+            end
+            for (e = 0; e < SETS; e = e + 1)
+                if (lru_we && idx == e) lru_bits[e] <= lru_val;
+        end
+    end
+
+    // ------------------------------------------------------------------
+    // FSM state, request latch, snoop responses
+    // ------------------------------------------------------------------
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -287,8 +348,6 @@ module l1_dcache (
             snoop_done_r     <= 1'b0;
             last_snoop_addr  <= 32'd0;
             last_snoop_cmd   <= 3'd0;
-            state_bits       <= {4*SETS{1'b0}};     // all Invalid
-            lru_bits         <= {SETS{1'b0}};
         end else begin
             state <= next_state;
 
@@ -299,65 +358,31 @@ module l1_dcache (
                 req_mtype_r <= cpu_mem_type;
             end
 
-            case (state)
-                ST_COMPARE:
-                    if (!snoop_valid) begin
-                        if (cache_hit && !req_wr_r) begin
-                            lru_bits[idx] <= ~hit_way;
-                        end else if (store_hit_ok) begin
-                            state_bits[{hit_way, idx}*2 +: 2] <= M;
-                            lru_bits[idx] <= ~hit_way;
-                        end else if (cache_hit) begin
-                            pend_way <= hit_way;
-                        end else begin
-                            pend_way <= vic_way;
-                        end
-                    end
-                ST_WRITEBACK:
-                    if (bus_ack) state_bits[{pend_way, idx}*2 +: 2] <= I;
-                ST_ALLOCATE:
-                    if (bus_ack) begin
-                        lru_bits[idx] <= ~pend_way;
-                        state_bits[{pend_way, idx}*2 +: 2] <=
-                            req_wr_r ? M : ((bus_shared === 1'b1) ? S : E);
-                    end
-                ST_UPGRADE:
-                    if (bus_ack) begin
-                        lru_bits[idx] <= ~pend_way;
-                        state_bits[{pend_way, idx}*2 +: 2] <= M;
-                    end
-                default: ;
-            endcase
+            if (state == ST_COMPARE && !snoop_valid && !(cache_hit && (!req_wr_r || store_hit_ok)))
+                pend_way <= cache_hit ? hit_way : vic_way;     // upgrade or miss
 
-            // Snoops. The CPU side changes no state in a snoop cycle, so the
-            // two never write the same line's state together.
+            // Snoop response (valid in the cycle after snoop_valid)
             if (snoop_valid) begin
-                if (!snoop_done_r || (snoop_addr != last_snoop_addr) || (snoop_cmd != last_snoop_cmd)) begin
+                if (snoop_new) begin
                     snoop_done_r     <= 1'b1;
                     last_snoop_addr  <= snoop_addr;
                     last_snoop_cmd   <= snoop_cmd;
                     snoop_resp       <= `SNOOP_NONE;
                     snoop_data_valid <= 1'b0;
-                    if (snoop_hit) begin
+                    if (snoop_hit)
                         case (snoop_cmd)
-                            `BUS_READ: begin
-                                // Supply the line; M and E holders keep a Shared copy
+                            `BUS_READ: begin       // M and E holders keep a Shared copy
                                 snoop_resp       <= (snoop_st == M) ? `SNOOP_HITM : `SNOOP_HIT;
                                 snoop_data_valid <= 1'b1;
-                                state_bits[{snoop_way, s_idx}*2 +: 2] <= S;
                             end
                             `BUS_READX: begin
                                 snoop_resp       <= (snoop_st == M) ? `SNOOP_HITM : `SNOOP_HIT;
                                 snoop_data_valid <= (snoop_st == M);
-                                state_bits[{snoop_way, s_idx}*2 +: 2] <= I;
                             end
-                            `BUS_UPGR, `BUS_INVAL: begin
+                            `BUS_UPGR, `BUS_INVAL:
                                 snoop_resp <= `SNOOP_ACK;
-                                state_bits[{snoop_way, s_idx}*2 +: 2] <= I;
-                            end
                             default: ;
                         endcase
-                    end
                 end
             end else begin
                 snoop_done_r     <= 1'b0;

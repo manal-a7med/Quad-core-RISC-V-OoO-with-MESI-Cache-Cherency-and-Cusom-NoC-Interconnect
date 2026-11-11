@@ -1,8 +1,9 @@
 # Quad-core RISC-V OoO with MESI cache coherence
 
-A four-core RV32I out-of-order processor (rename, 8-entry issue queue,
-16-entry ROB, load/store queue) with private L1 caches, a shared L2, and
-MESI coherence over a snooping bus. A 2x2 mesh NoC with directory coherence
+A four-core RV32I (+ Zicsr, machine mode) out-of-order processor (rename,
+8-entry issue queue, 16-entry ROB, load/store queue) with private L1 caches,
+a shared L2, and MESI coherence over a snooping bus, plus a small I/O block
+(UART, LEDs, 7-segment display). A 2x2 mesh NoC with directory coherence
 is planned. Targets: FPGA (Artix-7 XC7A100T) first, then an ASIC flow.
 
 ## Quick start (Linux)
@@ -11,9 +12,36 @@ is planned. Targets: FPGA (Artix-7 XC7A100T) first, then an ASIC flow.
 sudo apt-get install iverilog yosys
 make sim          # all RTL testbenches, fails on any failed check
 make sim-repro    # known-bug reproduction testbench (see review/)
-make synth        # Yosys synthesis check of quad_core_top
+make synth        # Yosys synthesis check of one core
 make help         # all targets
 ```
+
+With a RISC-V GCC (`sudo apt-get install gcc-riscv64-unknown-elf`) and a
+[riscv-tests](https://github.com/riscv-software-src/riscv-tests) checkout:
+
+```
+make isa RISCV_TESTS=../riscv-tests   # rv32ui + system tests on one core
+make soc-isa                          # the same programs on the 4-core SoC
+make soc-run PROG=hello               # C demo on the SoC: "hello from hart N"
+make soc-run PROG=parsum              # 4-hart parallel array sum
+make fpga-sim PROG=hello              # board-level simulation of fpga_top
+```
+
+## FPGA (Digilent Nexys A7-100T)
+
+```
+make sw                         # builds build/sw/<prog>.line.hex
+make fpga PROG=hello            # Vivado: bitstream with the program in memory
+make program                    # load it over USB
+```
+
+The core clock is 50 MHz (`CLKOUT_DIV=20`; use `CLKOUT_DIV=25` for 40 MHz if
+timing fails). Open a terminal on the board's USB serial port at 115200 8N1
+to see the UART output. LEDs show the program's `LEDS` register and the
+7-segment display shows its `HEX` register; the rightmost decimal point
+lights when the program has finished. CPU_RESET restarts the program (start-up
+code clears `.bss`; initialised data is not reloaded).
+The I/O registers are listed in `rtl/io/soc_io.v` and `sw/common/soc.h`.
 
 Build outputs (logs, VCD waveforms) go to `build/`. On Windows, pass tool
 paths, e.g. `make IVERILOG=C:/iverilog/bin/iverilog.exe VVP=C:/iverilog/bin/vvp.exe sim`.
@@ -26,11 +54,14 @@ paths, e.g. `make IVERILOG=C:/iverilog/bin/iverilog.exe VVP=C:/iverilog/bin/vvp.
 | `rtl/cache` | L1I, L1D, L2 |
 | `rtl/coherence` | Bus arbiter, coherence bus, snoop controller |
 | `rtl/memory` | Main memory and controller |
+| `rtl/io` | UART, memory-mapped I/O, 7-segment driver |
 | `rtl/top` | `quad_core_top`, `fpga_top` |
+| `sw` | Bare-metal C demos and start-up code |
 | `tb` | Testbenches and test programs |
+| `verif` | riscv-tests harness, system tests, SoC and board-level testbenches |
 | `review` | Bug reproduction testbench from the design review |
 | `docs` | Reports, diagrams, and `docs/plan/` (roadmap and strategy) |
-| `synth` | FPGA constraints |
+| `synth` | Nexys A7 constraints, Vivado build and program scripts |
 
 ## Plan
 
