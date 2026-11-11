@@ -335,7 +335,7 @@ The core was tested with a sequence of 7 RV32I instructions:
 All 11 core modules compile cleanly under Icarus Verilog with zero errors and zero warnings:
 
 ```
-> iverilog -DSIM -I rtl/core -I rtl/cache tb/tb_ooo_core.v rtl/core/*.v
+> iverilog -DSIM -I rtl/core -I rtl/cache tb/tb_ooo_core.v rtl/core/*.v   (or simply: make sim-core)
 > (exit code 0, no output = clean compilation)
 ```
 

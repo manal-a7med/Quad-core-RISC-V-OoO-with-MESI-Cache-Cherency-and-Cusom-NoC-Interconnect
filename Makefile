@@ -1,84 +1,97 @@
 # =============================================================================
-# Makefile — Quad-Core Out-of-Order RISC-V Processor & MESI Coherence Animator
+# Makefile: Quad-Core Out-of-Order RISC-V Processor with MESI coherence
 # =============================================================================
-# Targets:
-#   make all       : Run all 7 Verilog RTL testbenches + generate MESI animation
-#   make animate   : Verify RTL, run terminal animation, and export animated GIF
-#   make gui       : Launch interactive desktop MESI Coherence animation window
-#   make sim       : Compile and run all 7 Verilog testbenches
-#   make clean     : Remove compiled simulation binaries (.vvp) and logs
+#   make sim         Run all RTL testbenches (fails if any check fails)
+#   make sim-<name>  Run one testbench (mesi arbiter cache core dep corner quad repro)
+#   make isa         rv32ui riscv-tests on the core (RISCV_TESTS=<checkout>)
+#   make synth       Yosys generic synthesis of one core (fast check, used by CI)
+#   make synth-soc   Yosys generic synthesis of quad_core_top (slow until the
+#                    caches and memory map to BRAM in P2)
+#   make synth-fpga  Yosys synth_xilinx of fpga_top, prints a resource report
+#   make animate     MESI terminal walkthrough + animated GIF
+#   make gui         Interactive MESI animation window
+#   make clean       Remove build outputs
+#
+# Tools come from PATH. On Windows override, e.g.
+#   make IVERILOG=C:/iverilog/bin/iverilog.exe VVP=C:/iverilog/bin/vvp.exe sim
 # =============================================================================
 
-IVERILOG  ?= C:/iverilog/bin/iverilog.exe
-VVP       ?= C:/iverilog/bin/vvp.exe
-PYTHON    ?= python
+IVERILOG ?= iverilog
+VVP      ?= vvp
+YOSYS    ?= yosys
+PYTHON   ?= python3
 
-INC_FLAGS  = -DSIM -I rtl/core -I rtl/cache
-OUT_DIR    = sim/out
-GIF_OUT    = docs/mesi_coherence_animation.gif
+INC_FLAGS = -g2012 -DSIM -I rtl/core -I rtl/cache
+OUT_DIR   = build
+GIF_OUT   = docs/mesi_coherence_animation.gif
+CHECK     = sh scripts/check_log.sh
 
-CORE_RTL   = $(wildcard rtl/core/*.v)
-CACHE_RTL  = $(wildcard rtl/cache/*.v)
-COH_RTL    = $(wildcard rtl/coherence/*.v)
-MEM_RTL    = $(wildcard rtl/memory/*.v)
-TOP_RTL    = rtl/top/quad_core_top.v
+CORE_RTL  = $(sort $(wildcard rtl/core/*.v))
+CACHE_RTL = $(sort $(filter-out rtl/cache/cache_controller.v,$(wildcard rtl/cache/*.v)))
+COH_RTL   = $(sort $(filter-out rtl/coherence/mesi_protocol.v,$(wildcard rtl/coherence/*.v)))
+MEM_RTL   = $(sort $(wildcard rtl/memory/*.v))
+SOC_RTL   = $(CORE_RTL) $(CACHE_RTL) $(COH_RTL) $(MEM_RTL) rtl/top/quad_core_top.v
 
-.PHONY: all animate gui sim sim-mesi sim-arbiter sim-cache sim-core sim-dep sim-corner sim-quad clean help
+TESTS = mesi arbiter cache core dep corner quad
 
-all: sim animate
+.PHONY: all sim $(addprefix sim-,$(TESTS)) sim-repro isa synth synth-soc synth-fpga animate gui clean help
+
+all: sim
 
 help:
-	@echo "=========================================================================="
-	@echo " Quad-Core RISC-V OoO SoC & MESI Coherence Automation Targets"
-	@echo "=========================================================================="
-	@echo "  make animate   - Run terminal walkthrough + generate animated GIF ($(GIF_OUT))"
-	@echo "  make gui       - Open interactive desktop MESI animation (Play/Pause/Step)"
-	@echo "  make sim       - Compile and run all 7 Verilog hardware testbenches"
-	@echo "  make all       - Run full RTL verification suite + MESI animation"
-	@echo "  make clean     - Clean simulation binaries and temporary files"
-	@echo "=========================================================================="
+	@sed -n '2,15p' Makefile
 
-# -----------------------------------------------------------------------------
-# Python Visual Coherence Animation Targets
-# -----------------------------------------------------------------------------
+$(OUT_DIR):
+	@mkdir -p $(OUT_DIR)
+
+# run(name, sources): compile, simulate inside build/ (VCDs land there), check log
+define run
+	$(IVERILOG) $(INC_FLAGS) -o $(OUT_DIR)/$(1).vvp $(2)
+	cd $(OUT_DIR) && $(VVP) -n $(1).vvp | tee $(1).log
+	$(CHECK) $(OUT_DIR)/$(1).log
+endef
+
+sim: $(addprefix sim-,$(TESTS))
+	@echo "All testbenches passed."
+
+sim-mesi: | $(OUT_DIR)
+	$(call run,mesi,rtl/coherence/mesi_protocol.v tb/tb_mesi_coherence.v)
+sim-arbiter: | $(OUT_DIR)
+	$(call run,arbiter,rtl/coherence/bus_arbiter.v tb/tb_bus_arbiter.v)
+sim-cache: | $(OUT_DIR)
+	$(call run,cache,rtl/cache/l1_dcache.v tb/tb_cache.v)
+sim-core: | $(OUT_DIR)
+	$(call run,core,$(CORE_RTL) tb/tb_ooo_core.v)
+sim-dep: | $(OUT_DIR)
+	$(call run,dep,$(CORE_RTL) tb/tb_ooo_dependent_arith.v)
+sim-corner: | $(OUT_DIR)
+	$(call run,corner,$(CORE_RTL) tb/tb_ooo_corner_cases.v)
+sim-quad: | $(OUT_DIR)
+	$(call run,quad,$(SOC_RTL) tb/tb_quad_core.v)
+sim-repro: | $(OUT_DIR)
+	cp review/prog.hex $(OUT_DIR)/
+	$(call run,repro,$(CORE_RTL) review/tb_repro.v)
+
+# rv32ui riscv-tests (needs riscv64-unknown-elf-gcc and a riscv-tests checkout)
+RISCV_TESTS ?= ../riscv-tests
+isa:
+	sh verif/riscv-tests/run.sh $(RISCV_TESTS)
+
+synth: | $(OUT_DIR)
+	$(YOSYS) -q -l $(OUT_DIR)/synth.log -p "read_verilog -DSYNTHESIS -I rtl/core $(CORE_RTL); synth -top riscv_ooo_core; stat"
+	@! grep -E "^Latch inferred|ERROR" $(OUT_DIR)/synth.log
+	@grep -A3 "design hierarchy" $(OUT_DIR)/synth.log | tail -1; grep "Number of cells" $(OUT_DIR)/synth.log | tail -1
+
+synth-soc: | $(OUT_DIR)
+	$(YOSYS) -q -l $(OUT_DIR)/synth_soc.log -p "read_verilog -DSYNTHESIS -I rtl/core -I rtl/cache $(SOC_RTL); synth -top quad_core_top; stat" 
+
+synth-fpga: | $(OUT_DIR)
+	$(YOSYS) -q -l $(OUT_DIR)/synth_fpga.log -p "read_verilog -DSYNTHESIS -I rtl/core -I rtl/cache $(SOC_RTL) rtl/top/fpga_top.v; synth_xilinx -family xc7 -top fpga_top; stat"
+
 animate:
 	$(PYTHON) scripts/mesi_visualizer.py --verify-rtl --cli --gif $(GIF_OUT)
-
 gui:
 	$(PYTHON) scripts/mesi_visualizer.py --gui
 
-# -----------------------------------------------------------------------------
-# Verilog RTL Simulation Targets
-# -----------------------------------------------------------------------------
-sim: sim-mesi sim-arbiter sim-cache sim-core sim-dep sim-corner sim-quad
-
-sim-mesi:
-	$(IVERILOG) $(INC_FLAGS) -o $(OUT_DIR)/mesi_test.vvp rtl/coherence/mesi_protocol.v tb/tb_mesi_coherence.v
-	$(VVP) $(OUT_DIR)/mesi_test.vvp
-
-sim-arbiter:
-	$(IVERILOG) $(INC_FLAGS) -o $(OUT_DIR)/arbiter_test.vvp rtl/coherence/bus_arbiter.v tb/tb_bus_arbiter.v
-	$(VVP) $(OUT_DIR)/arbiter_test.vvp
-
-sim-cache:
-	$(IVERILOG) $(INC_FLAGS) -o $(OUT_DIR)/cache_test.vvp rtl/cache/l1_dcache.v tb/tb_cache.v
-	$(VVP) $(OUT_DIR)/cache_test.vvp
-
-sim-core:
-	$(IVERILOG) $(INC_FLAGS) -o $(OUT_DIR)/core_test.vvp $(CORE_RTL) tb/tb_ooo_core.v
-	$(VVP) $(OUT_DIR)/core_test.vvp
-
-sim-dep:
-	$(IVERILOG) $(INC_FLAGS) -o $(OUT_DIR)/dep_arith_test.vvp $(CORE_RTL) tb/tb_ooo_dependent_arith.v
-	$(VVP) $(OUT_DIR)/dep_arith_test.vvp
-
-sim-corner:
-	$(IVERILOG) $(INC_FLAGS) -o $(OUT_DIR)/corner_cases_test.vvp $(CORE_RTL) tb/tb_ooo_corner_cases.v
-	$(VVP) $(OUT_DIR)/corner_cases_test.vvp
-
-sim-quad:
-	$(IVERILOG) $(INC_FLAGS) -o $(OUT_DIR)/quad_test.vvp $(CORE_RTL) $(CACHE_RTL) $(COH_RTL) $(MEM_RTL) $(TOP_RTL) tb/tb_quad_core.v
-	$(VVP) $(OUT_DIR)/quad_test.vvp
-
 clean:
-	$(PYTHON) -c "import glob, os; [os.remove(f) for f in glob.glob('sim/out/*.vvp') + glob.glob('*.vvp') if os.path.exists(f)]"
+	rm -rf $(OUT_DIR) *.vcd *.vvp
