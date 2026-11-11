@@ -118,13 +118,15 @@ module load_store_unit (
         endcase
     endfunction
 
-    function [3:0] rel_age(input [3:0] idx);
-        rel_age = idx - rob_head;
+    // (Everything is passed in: always @(*) does not see signals that a
+    // function reads from the enclosing module.)
+    function [3:0] rel_age(input [3:0] idx, input [3:0] head);
+        rel_age = idx - head;
     endfunction
 
-    // Is store slot j older than a load with ROB index lrob?
-    function store_older(input integer j, input [3:0] lrob);
-        store_older = lsq_committed[j] || (rel_age(lsq_rob_idx[j]) < rel_age(lrob));
+    // Is a store (committed flag, ROB index) older than a load with ROB index lrob?
+    function store_older(input committed, input [3:0] srob, input [3:0] lrob, input [3:0] head);
+        store_older = committed || (rel_age(srob, head) < rel_age(lrob, head));
     endfunction
 
     reg        fwd_found;
@@ -141,7 +143,7 @@ module load_store_unit (
         fwd_lane  = 32'd0;
         for (fwd_i = 0; fwd_i < DEPTH; fwd_i = fwd_i + 1) begin
             if (enqueue_en && is_load && lsq_valid[fwd_i] && lsq_is_store[fwd_i] &&
-                !lsq_completed[fwd_i] && store_older(fwd_i, rob_idx) &&
+                !lsq_completed[fwd_i] && store_older(lsq_committed[fwd_i], lsq_rob_idx[fwd_i], rob_idx, rob_head) &&
                 lsq_addr[fwd_i][31:2] == addr[31:2] &&
                 |(byte_mask(lsq_mem_type[fwd_i], lsq_addr[fwd_i][1:0]) & ld_mask)) begin
                 fwd_hits = fwd_hits + 3'd1;
@@ -164,7 +166,7 @@ module load_store_unit (
             ld_blocked[bi] = 1'b0;
             for (bj = 0; bj < DEPTH; bj = bj + 1) begin
                 if (lsq_valid[bj] && lsq_is_store[bj] && !lsq_completed[bj] &&
-                    store_older(bj, lsq_rob_idx[bi]) &&
+                    store_older(lsq_committed[bj], lsq_rob_idx[bj], lsq_rob_idx[bi], rob_head) &&
                     lsq_addr[bj][31:2] == lsq_addr[bi][31:2] &&
                     |(byte_mask(lsq_mem_type[bj], lsq_addr[bj][1:0]) &
                       byte_mask(lsq_mem_type[bi], lsq_addr[bi][1:0])))

@@ -40,11 +40,13 @@ module l1_dcache (
     localparam INDEX_BITS = 6;
     localparam WAYS       = 2;
 
-    // Cache Arrays
-    reg [255:0]        data_array  [0:WAYS-1][0:CACHE_SETS-1];
-    reg [TAG_BITS-1:0] tag_array   [0:WAYS-1][0:CACHE_SETS-1];
-    reg [1:0]          state_array [0:WAYS-1][0:CACHE_SETS-1]; // MESI state
-    reg                lru_array   [0:CACHE_SETS-1];
+    // Cache arrays. Data and tags have no reset and one write port, so they
+    // map to (LUT) RAM; entry {way, set}. MESI state and LRU bits need reset
+    // and are flip-flop vectors (state of {way, set} at bits [2*{way,set} +: 2]).
+    reg [255:0]                  data_array [0:WAYS*CACHE_SETS-1];
+    reg [TAG_BITS-1:0]           tag_array  [0:WAYS*CACHE_SETS-1];
+    reg [2*WAYS*CACHE_SETS-1:0]  state_bits;
+    reg [CACHE_SETS-1:0]         lru_bits;
 
     // FSM States
     localparam STATE_IDLE          = 3'd0;
@@ -77,19 +79,19 @@ module l1_dcache (
     wire [1:0]            byte_off  = eff_addr[1:0];
 
     // Hit detection (CPU)
-    wire way0_valid = (state_array[0][index] != `MESI_INVALID);
-    wire way1_valid = (state_array[1][index] != `MESI_INVALID);
-    wire way0_hit   = way0_valid && (tag_array[0][index] == tag);
-    wire way1_hit   = way1_valid && (tag_array[1][index] == tag);
+    wire way0_valid = (state_bits[{1'b0, index}*2 +: 2] != `MESI_INVALID);
+    wire way1_valid = (state_bits[{1'b1, index}*2 +: 2] != `MESI_INVALID);
+    wire way0_hit   = way0_valid && (tag_array[{1'b0, index}] == tag);
+    wire way1_hit   = way1_valid && (tag_array[{1'b1, index}] == tag);
     wire cache_hit  = way0_hit || way1_hit;
     wire hit_way    = way1_hit ? 1'b1 : 1'b0;
-    wire [1:0] hit_state = state_array[hit_way][index];
+    wire [1:0] hit_state = state_bits[{hit_way, index}*2 +: 2];
 
     // Victim selection on miss
     wire vic_way = (!way0_valid) ? 1'b0 :
                    (!way1_valid) ? 1'b1 :
-                                   lru_array[index];
-    wire vic_dirty = (state_array[vic_way][index] == `MESI_MODIFIED);
+                                   lru_bits[index];
+    wire vic_dirty = (state_bits[{vic_way, index}*2 +: 2] == `MESI_MODIFIED);
 
     // Helper: merge a CPU store (word/half/byte) into a 256-bit cache line
     function [255:0] merge_write_line;
@@ -125,17 +127,17 @@ module l1_dcache (
     // Snoop decoding
     wire [INDEX_BITS-1:0] snoop_index = snoop_addr[10:5];
     wire [TAG_BITS-1:0]   snoop_tag   = snoop_addr[31:11];
-    wire snoop_w0_hit = (state_array[0][snoop_index] != `MESI_INVALID) && (tag_array[0][snoop_index] == snoop_tag);
-    wire snoop_w1_hit = (state_array[1][snoop_index] != `MESI_INVALID) && (tag_array[1][snoop_index] == snoop_tag);
+    wire snoop_w0_hit = (state_bits[{1'b0, snoop_index}*2 +: 2] != `MESI_INVALID) && (tag_array[{1'b0, snoop_index}] == snoop_tag);
+    wire snoop_w1_hit = (state_bits[{1'b1, snoop_index}*2 +: 2] != `MESI_INVALID) && (tag_array[{1'b1, snoop_index}] == snoop_tag);
     wire snoop_hit    = snoop_w0_hit || snoop_w1_hit;
     wire snoop_way    = snoop_w1_hit ? 1'b1 : 1'b0;
-    wire [1:0] snoop_st = state_array[snoop_way][snoop_index];
+    wire [1:0] snoop_st = state_bits[{snoop_way, snoop_index}*2 +: 2];
 
     reg        snoop_done_r;
     reg [31:0] last_snoop_addr;
     reg [2:0]  last_snoop_cmd;
 
-    wire [255:0] hit_line = data_array[hit_way][index];
+    wire [255:0] hit_line = data_array[{hit_way, index}];
     wire [31:0]  hit_word = hit_line[word_sel*32 +: 32] >> (byte_off * 8);
 
     // Combinational FSM and outputs
@@ -187,8 +189,8 @@ module l1_dcache (
                     if (vic_dirty) begin
                         bus_req    = 1'b1;
                         bus_cmd    = `BUS_FLUSH;
-                        bus_addr   = {tag_array[vic_way][index], index, 5'b0};
-                        bus_wdata  = data_array[vic_way][index];
+                        bus_addr   = {tag_array[{vic_way, index}], index, 5'b0};
+                        bus_wdata  = data_array[{vic_way, index}];
                         next_state = STATE_WRITEBACK;
                     end else begin
                         bus_req    = 1'b1;
@@ -202,8 +204,8 @@ module l1_dcache (
             STATE_WRITEBACK: begin
                 bus_req   = 1'b1;
                 bus_cmd   = `BUS_FLUSH;
-                bus_addr  = {tag_array[pend_way][index], index, 5'b0};
-                bus_wdata = data_array[pend_way][index];
+                bus_addr  = {tag_array[{pend_way, index}], index, 5'b0};
+                bus_wdata = data_array[{pend_way, index}];
                 if (bus_ack) begin
                     next_state = STATE_WB_PAUSE;
                 end
@@ -225,7 +227,7 @@ module l1_dcache (
 
             STATE_UPGRADE: begin
                 bus_req  = 1'b1;
-                bus_cmd  = (state_array[pend_way][index] == `MESI_INVALID) ? `BUS_READX : `BUS_UPGR;
+                bus_cmd  = (state_bits[{pend_way, index}*2 +: 2] == `MESI_INVALID) ? `BUS_READX : `BUS_UPGR;
                 bus_addr = {eff_addr[31:5], 5'b0};
                 if (bus_ack) begin
                     next_state = STATE_COMPARE_TAG;
@@ -234,6 +236,35 @@ module l1_dcache (
 
             default: next_state = STATE_IDLE;
         endcase
+    end
+
+    // ------------------------------------------------------------------
+    // Data/tag RAM write port (one write per cycle)
+    // ------------------------------------------------------------------
+    reg         d_we, t_we, d_way;
+    reg [255:0] d_wdata;
+    always @(*) begin
+        d_we = 1'b0; t_we = 1'b0; d_way = pend_way; d_wdata = bus_rdata;
+        if (state == STATE_COMPARE_TAG && cache_hit && eff_wr &&
+            (hit_state == `MESI_MODIFIED || hit_state == `MESI_EXCLUSIVE)) begin
+            d_we = 1'b1; d_way = hit_way;
+            d_wdata = merge_write_line(data_array[{hit_way, index}], word_sel, byte_off, eff_mtype, eff_wdata);
+        end else if (state == STATE_ALLOCATE && bus_ack) begin
+            d_we = 1'b1; t_we = 1'b1;
+            d_wdata = eff_wr ? merge_write_line(bus_rdata, word_sel, byte_off, eff_mtype, eff_wdata) : bus_rdata;
+        end else if (state == STATE_UPGRADE && bus_ack) begin
+            d_we = 1'b1;
+            if (state_bits[{pend_way, index}*2 +: 2] == `MESI_INVALID) begin
+                t_we = 1'b1;
+                d_wdata = merge_write_line(bus_rdata, word_sel, byte_off, eff_mtype, eff_wdata);
+            end else
+                d_wdata = merge_write_line(data_array[{pend_way, index}], word_sel, byte_off, eff_mtype, eff_wdata);
+        end
+    end
+
+    always @(posedge clk) begin
+        if (d_we) data_array[{d_way, index}] <= d_wdata;
+        if (t_we) tag_array[{d_way, index}]  <= tag;
     end
 
     integer s, w;
@@ -251,14 +282,8 @@ module l1_dcache (
             snoop_done_r     <= 1'b0;
             last_snoop_addr  <= 32'd0;
             last_snoop_cmd   <= 3'd0;
-            for (s = 0; s < CACHE_SETS; s = s + 1) begin
-                lru_array[s] <= 1'b0;
-                for (w = 0; w < WAYS; w = w + 1) begin
-                    state_array[w][s] <= `MESI_INVALID;
-                    tag_array[w][s]   <= {TAG_BITS{1'b0}};
-                    data_array[w][s]  <= 256'd0;
-                end
-            end
+            state_bits       <= {2*WAYS*CACHE_SETS{1'b0}};   // all MESI_INVALID
+            lru_bits         <= {CACHE_SETS{1'b0}};
         end else begin
             state <= next_state;
 
@@ -274,11 +299,10 @@ module l1_dcache (
             if (state == STATE_COMPARE_TAG) begin
                 if (cache_hit) begin
                     if (!eff_wr) begin
-                        lru_array[index] <= ~hit_way;
+                        lru_bits[index] <= ~hit_way;
                     end else if (hit_state == `MESI_MODIFIED || hit_state == `MESI_EXCLUSIVE) begin
-                        data_array[hit_way][index]  <= merge_write_line(data_array[hit_way][index], word_sel, byte_off, eff_mtype, eff_wdata);
-                        state_array[hit_way][index] <= `MESI_MODIFIED;
-                        lru_array[index]            <= ~hit_way;
+                        state_bits[{hit_way, index}*2 +: 2] <= `MESI_MODIFIED;
+                        lru_bits[index]            <= ~hit_way;
                     end else begin
                         pend_way <= hit_way;
                         snoop_resp       <= `SNOOP_NONE;
@@ -290,26 +314,17 @@ module l1_dcache (
                     snoop_data_valid <= 1'b0;
                 end
             end else if (state == STATE_WRITEBACK && bus_ack) begin
-                state_array[pend_way][index] <= `MESI_INVALID;
+                state_bits[{pend_way, index}*2 +: 2] <= `MESI_INVALID;
             end else if (state == STATE_ALLOCATE && bus_ack) begin
-                tag_array[pend_way][index] <= tag;
-                lru_array[index]           <= ~pend_way;
+                lru_bits[index]           <= ~pend_way;
                 if (eff_wr) begin
-                    data_array[pend_way][index]  <= merge_write_line(bus_rdata, word_sel, byte_off, eff_mtype, eff_wdata);
-                    state_array[pend_way][index] <= `MESI_MODIFIED;
+                    state_bits[{pend_way, index}*2 +: 2] <= `MESI_MODIFIED;
                 end else begin
-                    data_array[pend_way][index]  <= bus_rdata;
-                    state_array[pend_way][index] <= (bus_shared === 1'b1) ? `MESI_SHARED : `MESI_EXCLUSIVE;
+                    state_bits[{pend_way, index}*2 +: 2] <= (bus_shared === 1'b1) ? `MESI_SHARED : `MESI_EXCLUSIVE;
                 end
             end else if (state == STATE_UPGRADE && bus_ack) begin
-                lru_array[index] <= ~pend_way;
-                if (state_array[pend_way][index] == `MESI_INVALID) begin
-                    tag_array[pend_way][index]  <= tag;
-                    data_array[pend_way][index] <= merge_write_line(bus_rdata, word_sel, byte_off, eff_mtype, eff_wdata);
-                end else begin
-                    data_array[pend_way][index] <= merge_write_line(data_array[pend_way][index], word_sel, byte_off, eff_mtype, eff_wdata);
-                end
-                state_array[pend_way][index] <= `MESI_MODIFIED;
+                lru_bits[index] <= ~pend_way;
+                state_bits[{pend_way, index}*2 +: 2] <= `MESI_MODIFIED;
             end
 
             // Snoop handling (can happen in parallel with CPU waiting for bus grant)
@@ -328,28 +343,28 @@ module l1_dcache (
                             `BUS_READ: begin
                                 if (snoop_st == `MESI_MODIFIED) begin
                                     snoop_resp       <= `SNOOP_HITM;
-                                    snoop_data       <= data_array[snoop_way][snoop_index];
+                                    snoop_data       <= data_array[{snoop_way, snoop_index}];
                                     snoop_data_valid <= 1'b1;
-                                    state_array[snoop_way][snoop_index] <= `MESI_SHARED;
+                                    state_bits[{snoop_way, snoop_index}*2 +: 2] <= `MESI_SHARED;
                                 end else begin
                                     snoop_resp       <= `SNOOP_HIT;
-                                    snoop_data       <= data_array[snoop_way][snoop_index];
+                                    snoop_data       <= data_array[{snoop_way, snoop_index}];
                                     snoop_data_valid <= 1'b1;
-                                    state_array[snoop_way][snoop_index] <= `MESI_SHARED;
+                                    state_bits[{snoop_way, snoop_index}*2 +: 2] <= `MESI_SHARED;
                                 end
                             end
 
                             `BUS_READX: begin
                                 if (snoop_st == `MESI_MODIFIED) begin
                                     snoop_resp       <= `SNOOP_HITM;
-                                    snoop_data       <= data_array[snoop_way][snoop_index];
+                                    snoop_data       <= data_array[{snoop_way, snoop_index}];
                                     snoop_data_valid <= 1'b1;
-                                    state_array[snoop_way][snoop_index] <= `MESI_INVALID;
+                                    state_bits[{snoop_way, snoop_index}*2 +: 2] <= `MESI_INVALID;
                                 end else begin
                                     snoop_resp       <= `SNOOP_HIT;
-                                    snoop_data       <= data_array[snoop_way][snoop_index];
+                                    snoop_data       <= data_array[{snoop_way, snoop_index}];
                                     snoop_data_valid <= 1'b0;
-                                    state_array[snoop_way][snoop_index] <= `MESI_INVALID;
+                                    state_bits[{snoop_way, snoop_index}*2 +: 2] <= `MESI_INVALID;
                                 end
                             end
 
@@ -357,7 +372,7 @@ module l1_dcache (
                                 snoop_resp       <= `SNOOP_ACK;
                                 snoop_data       <= 256'd0;
                                 snoop_data_valid <= 1'b0;
-                                state_array[snoop_way][snoop_index] <= `MESI_INVALID;
+                                state_bits[{snoop_way, snoop_index}*2 +: 2] <= `MESI_INVALID;
                             end
 
                             default: begin

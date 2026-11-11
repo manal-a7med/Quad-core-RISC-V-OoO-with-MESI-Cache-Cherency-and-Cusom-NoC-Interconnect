@@ -132,8 +132,10 @@ module issue_queue (
     // Program-order age = distance from the ROB head (0 = oldest in flight).
     // This replaces a saturating per-entry counter, which stopped ordering
     // entries once two of them had both waited 15+ cycles.
-    function [3:0] rel_age(input [3:0] rob_idx);
-        rel_age = rob_idx - rob_head;
+    // (rob_head is passed in: always @(*) does not see signals that a
+    // function reads from the enclosing module.)
+    function [3:0] rel_age(input [3:0] rob_idx, input [3:0] head);
+        rel_age = rob_idx - head;
     endfunction
 
     always @(*) begin
@@ -150,15 +152,15 @@ module issue_queue (
                 if (iq_is_load[ii]) begin
                     for (si = 0; si < `IQ_DEPTH; si = si + 1) begin
                         if (iq_valid[si] && iq_is_store[si] &&
-                            (rel_age(iq_rob_idx[si]) < rel_age(iq_rob_idx[ii])))
+                            (rel_age(iq_rob_idx[si], rob_head) < rel_age(iq_rob_idx[ii], rob_head)))
                             older_store_pending = 1'b1;
                     end
                 end
                 if (iq_valid[ii] && iq_rs1_ready[ii] && iq_rs2_ready[ii] && !older_store_pending) begin
-                    if (!issue_found || rel_age(iq_rob_idx[ii]) < oldest_age) begin
+                    if (!issue_found || rel_age(iq_rob_idx[ii], rob_head) < oldest_age) begin
                         issue_slot  = ii[2:0];
                         issue_found = 1'b1;
-                        oldest_age  = rel_age(iq_rob_idx[ii]);
+                        oldest_age  = rel_age(iq_rob_idx[ii], rob_head);
                     end
                 end
             end

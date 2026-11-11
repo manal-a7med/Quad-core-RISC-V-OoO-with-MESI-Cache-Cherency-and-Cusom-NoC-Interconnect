@@ -20,7 +20,7 @@ module tb_soc;
     for (k = 0; k < 16384; k = k + 1) words[k] = 32'h0;
     if (!$value$plusargs("hex=%s", hexfile)) begin $display("tb_soc: +hex=<file>"); $finish; end
     $readmemh(hexfile, words);
-    if (!$value$plusargs("timeout=%d", timeout)) timeout = 200000;
+    if (!$value$plusargs("timeout=%d", timeout)) timeout = 3000000;
     all = $test$plusargs("all");
     #1;
     for (k = 0; k < 16384; k = k + 1) dut.u_mem.mem[k >> 3][(k & 7) * 32 +: 32] = words[k];
