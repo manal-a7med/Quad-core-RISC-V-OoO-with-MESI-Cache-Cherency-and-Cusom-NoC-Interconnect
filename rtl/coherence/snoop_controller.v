@@ -175,7 +175,7 @@ module snoop_controller (
         endcase
     end
     
-`ifdef SIM
+`ifdef BUS_DEBUG   // +define+BUS_DEBUG for a transaction log
     always @(posedge clk) begin
         if (state != next_state) $display("[Snoop Controller] State: %0d -> %0d", state, next_state);
     end

@@ -52,7 +52,7 @@ module bus_arbiter (
         end
     end
 
-`ifdef SIM
+`ifdef BUS_DEBUG   // +define+BUS_DEBUG for a transaction log
     always @(posedge clk) begin
         if (|req && !bus_busy) $display("[Bus Arbiter] Granted bus to core %0d", next_owner);
         if (bus_release && bus_busy) $display("[Bus Arbiter] Bus released by core %0d", current_owner);

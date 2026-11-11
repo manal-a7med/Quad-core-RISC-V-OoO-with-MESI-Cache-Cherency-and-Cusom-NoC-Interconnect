@@ -131,26 +131,26 @@ module tb_quad_core;
         // Initialize Main Memory with instructions and shared data
         #1;
         // Instructions at 0x0000_0000 .. 0x0000_0034
-        dut.u_mem.mem[0]  = 32'h10002083; // 0x00: LW   x1,  256(x0)  [0x100] -> 42
-        dut.u_mem.mem[1]  = 32'h10402103; // 0x04: LW   x2,  260(x0)  [0x104] -> 10
-        dut.u_mem.mem[2]  = 32'h002081B3; // 0x08: ADD  x3,  x1, x2           -> 52
-        dut.u_mem.mem[3]  = 32'h40208233; // 0x0C: SUB  x4,  x1, x2           -> 32
-        dut.u_mem.mem[4]  = 32'h00818293; // 0x10: ADDI x5,  x3, 8            -> 60
-        dut.u_mem.mem[5]  = 32'h10502423; // 0x14: SW   x5,  264(x0)  [0x108] <= 60
-        dut.u_mem.mem[6]  = 32'h12302023; // 0x18: SW   x3,  288(x0)  [0x120] <= 52
-        dut.u_mem.mem[7]  = 32'h10802303; // 0x1C: LW   x6,  264(x0)  [0x108] -> 60
-        dut.u_mem.mem[8]  = 32'h12002383; // 0x20: LW   x7,  288(x0)  [0x120] -> 52
-        dut.u_mem.mem[9]  = 32'h00730433; // 0x24: ADD  x8,  x6, x7           -> 112
-        dut.u_mem.mem[10] = 32'h004444B3; // 0x28: XOR  x9,  x8, x4           -> 80
-        dut.u_mem.mem[11] = 32'h0024E533; // 0x2C: OR   x10, x9, x2           -> 90
-        dut.u_mem.mem[12] = 32'h003225B3; // 0x30: SLT  x11, x4, x3           -> 1
-        dut.u_mem.mem[13] = 32'h00B50633; // 0x34: ADD  x12, x10, x11         -> 91
+        dut.u_mem.mem[0][31:0] = 32'h10002083; // 0x00: LW   x1,  256(x0)  [0x100] -> 42
+        dut.u_mem.mem[0][63:32] = 32'h10402103; // 0x04: LW   x2,  260(x0)  [0x104] -> 10
+        dut.u_mem.mem[0][95:64] = 32'h002081B3; // 0x08: ADD  x3,  x1, x2           -> 52
+        dut.u_mem.mem[0][127:96] = 32'h40208233; // 0x0C: SUB  x4,  x1, x2           -> 32
+        dut.u_mem.mem[0][159:128] = 32'h00818293; // 0x10: ADDI x5,  x3, 8            -> 60
+        dut.u_mem.mem[0][191:160] = 32'h10502423; // 0x14: SW   x5,  264(x0)  [0x108] <= 60
+        dut.u_mem.mem[0][223:192] = 32'h12302023; // 0x18: SW   x3,  288(x0)  [0x120] <= 52
+        dut.u_mem.mem[0][255:224] = 32'h10802303; // 0x1C: LW   x6,  264(x0)  [0x108] -> 60
+        dut.u_mem.mem[1][31:0] = 32'h12002383; // 0x20: LW   x7,  288(x0)  [0x120] -> 52
+        dut.u_mem.mem[1][63:32] = 32'h00730433; // 0x24: ADD  x8,  x6, x7           -> 112
+        dut.u_mem.mem[1][95:64] = 32'h004444B3; // 0x28: XOR  x9,  x8, x4           -> 80
+        dut.u_mem.mem[1][127:96] = 32'h0024E533; // 0x2C: OR   x10, x9, x2           -> 90
+        dut.u_mem.mem[1][159:128] = 32'h003225B3; // 0x30: SLT  x11, x4, x3           -> 1
+        dut.u_mem.mem[1][191:160] = 32'h00B50633; // 0x34: ADD  x12, x10, x11         -> 91
 
         // Shared Data in Main Memory at 0x0000_0100 (word index 64)
-        dut.u_mem.mem[64] = 32'd42;       // 0x0100 = 42
-        dut.u_mem.mem[65] = 32'd10;       // 0x0104 = 10
-        dut.u_mem.mem[66] = 32'd0;        // 0x0108 = 0 (will be written to 60)
-        dut.u_mem.mem[72] = 32'd0;        // 0x0120 = 0 (will be written to 52)
+        dut.u_mem.mem[8][31:0] = 32'd42;       // 0x0100 = 42
+        dut.u_mem.mem[8][63:32] = 32'd10;       // 0x0104 = 10
+        dut.u_mem.mem[8][95:64] = 32'd0;        // 0x0108 = 0 (will be written to 60)
+        dut.u_mem.mem[9][31:0] = 32'd0;        // 0x0120 = 0 (will be written to 52)
 
         $display("============================================================================");
         $display(" Quad-Core RISC-V OoO SoC — Full System & MESI Coherence Verification");
