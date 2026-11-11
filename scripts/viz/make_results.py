@@ -406,10 +406,11 @@ code {{ font-family: var(--f-mono); font-size: .88em; }}
 .leds {{ display: inline-flex; gap: 3px; }}
 .led {{ width: 9px; height: 9px; border-radius: 50%; background: var(--line); display: inline-block; }}
 .led.on {{ background: #33d17a; box-shadow: 0 0 5px #33d17a; }}
-.bar {{ display: grid; grid-template-columns: minmax(0, 11rem) 1fr auto; gap: 8px; align-items: center; font-size: .85rem; margin: 6px 0; }}
+.bar {{ display: grid; grid-template-columns: minmax(0, 11rem) 1fr 4.2rem; gap: 8px; align-items: center; font-size: .85rem; margin: 6px 0; }}
 .bar .bt {{ background: var(--line); border-radius: 3px; height: 10px; overflow: hidden; }}
 .bar .bt i {{ display: block; height: 100%; background: var(--accent); }}
-.bar .bn {{ font-family: var(--f-mono); font-variant-numeric: tabular-nums; }}
+.bar .bn {{ font-family: var(--f-mono); font-variant-numeric: tabular-nums; text-align: right; }}
+.cols.top {{ align-items: start; }}
 </style>
 <div class="wrap">
 <header>
@@ -508,7 +509,7 @@ code {{ font-family: var(--f-mono); font-size: .88em; }}
   LUTs than Vivado. The first full-SoC estimate was {AREA_FIRST:,} LUTs
   ({100*AREA_FIRST/CAP["LUT"]:.0f}% of the device); moving the cache data, tags and state into block
   and LUT RAM and simplifying the bus brought it to the figure below.</p>
-  <div class="cols">
+  <div class="cols top">
     <div class="scroll"><table>
       <thead><tr><th>Resource</th><th class="num">Used</th><th class="num">XC7A100T</th><th class="num">Used</th></tr></thead>
       <tbody>{area_rows}</tbody></table></div>
@@ -518,7 +519,7 @@ code {{ font-family: var(--f-mono); font-size: .88em; }}
 
 <footer>
   <span>Regenerate: <code>sh scripts/viz/collect.sh &lt;riscv-tests checkout&gt; &amp;&amp; python3 scripts/viz/make_results.py</code></span>
-  <span>Sources: <code>review/tb_repro.v</code>, <code>verif/riscv-tests/</code>, <code>verif/demo/ooo_demo.S</code>, <code>verif/trace.vh</code></span>
+  <span>Sources: <code>review/tb_repro.v</code>, <code>verif/riscv-tests/</code>, <code>verif/demo/ooo_demo.S</code>, <code>verif/trace.vh</code>, <code>sw/</code>, <code>verif/soc/</code>, <code>build/synth_fpga.log</code> (<code>make synth-fpga</code>)</span>
 </footer>
 </div>
 """
