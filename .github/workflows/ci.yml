@@ -41,8 +41,10 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - name: Install Yosys
-        run: sudo apt-get update && sudo apt-get install -y yosys
+      - name: Install Yosys and Verilator
+        run: sudo apt-get update && sudo apt-get install -y yosys verilator
+      - name: Verilator lint
+        run: make lint
       - name: Generic synthesis
         run: make synth
       - uses: actions/upload-artifact@v4

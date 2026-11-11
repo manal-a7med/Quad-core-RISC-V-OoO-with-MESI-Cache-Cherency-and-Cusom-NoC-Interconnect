@@ -4,6 +4,8 @@
 #   make sim         Run all RTL testbenches (fails if any check fails)
 #   make sim-<name>  Run one testbench (mesi arbiter cache core dep corner quad repro)
 #   make isa         rv32ui riscv-tests on the core (RISCV_TESTS=<checkout>)
+#   make lint        Verilator lint of the core (errors fail; warnings listed)
+#   make lint-soc    Verilator lint of quad_core_top (passes once P2 removes array resets)
 #   make synth       Yosys generic synthesis of one core (fast check, used by CI)
 #   make synth-soc   Yosys generic synthesis of quad_core_top (slow until the
 #                    caches and memory map to BRAM in P2)
@@ -20,6 +22,7 @@
 
 IVERILOG ?= iverilog
 VVP      ?= vvp
+VERILATOR ?= verilator
 YOSYS    ?= yosys
 PYTHON   ?= python3
 
@@ -36,7 +39,7 @@ SOC_RTL   = $(CORE_RTL) $(CACHE_RTL) $(COH_RTL) $(MEM_RTL) rtl/top/quad_core_top
 
 TESTS = mesi arbiter cache core dep corner quad
 
-.PHONY: all sim $(addprefix sim-,$(TESTS)) sim-repro isa synth synth-soc synth-fpga results animate gui clean help
+.PHONY: all sim $(addprefix sim-,$(TESTS)) sim-repro isa synth lint lint-soc synth-soc synth-fpga results animate gui clean help
 
 all: sim
 
@@ -78,6 +81,16 @@ sim-repro: | $(OUT_DIR)
 RISCV_TESTS ?= ../riscv-tests
 isa:
 	sh verif/riscv-tests/run.sh $(RISCV_TESTS)
+
+LINT = $(VERILATOR) --lint-only -Wall -Wno-fatal -Irtl/core -Irtl/cache
+lint: | $(OUT_DIR)
+	$(LINT) --top-module riscv_ooo_core $(CORE_RTL) > $(OUT_DIR)/lint.log 2>&1 || true
+	@! grep "^%Error" $(OUT_DIR)/lint.log
+	@echo "lint: `grep -c '^%Warning' $(OUT_DIR)/lint.log` warnings, 0 errors (see $(OUT_DIR)/lint.log)"
+
+lint-soc: | $(OUT_DIR)
+	$(LINT) --top-module quad_core_top $(SOC_RTL) > $(OUT_DIR)/lint_soc.log 2>&1 || true
+	@! grep "^%Error" $(OUT_DIR)/lint_soc.log
 
 synth: | $(OUT_DIR)
 	$(YOSYS) -q -l $(OUT_DIR)/synth.log -p "read_verilog -DSYNTHESIS -I rtl/core $(CORE_RTL); synth -top riscv_ooo_core; stat"
