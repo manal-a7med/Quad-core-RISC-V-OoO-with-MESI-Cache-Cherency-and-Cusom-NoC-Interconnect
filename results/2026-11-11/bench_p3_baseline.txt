@@ -1,0 +1,13 @@
+# riscv-tests benchmarks on the 4-core SoC (make bench), before the P4 performance work
+# config B3: 4 cores, OoO, MESI, snooping bus; rv32ia_zicsr, gcc 13.2 -O2; RTL of the commit that added this file
+# <bench> <result> cycles=<whole run> region=<timed region> instret=<instructions in the region>
+dhrystone PASS cycles=1225159 region=1151102 instret=292029
+median PASS cycles=58759 region=19413 instret=4251
+multiply PASS cycles=189493 region=88171 instret=20897
+qsort PASS cycles=992867 region=506103 instret=123504
+rsort PASS cycles=1354279 region=591482 instret=171130
+towers PASS cycles=38649 region=14434 instret=3751
+vvadd PASS cycles=34577 region=8805 instret=2413
+memcpy PASS cycles=816734 region=345673 instret=80021
+mt-vvadd PASS cycles=579572 region=186860 instret=-
+mt-matmul PASS cycles=103846 region=79271 instret=-

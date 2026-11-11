@@ -14,7 +14,7 @@ TESTS=${*:-$(cd "$RVT/isa/rv32ui" && ls *.S | sed 's/\.S$//' | grep -v -e fence_
 UA_TESTS=$( [ -n "$*" ] || (cd "$RVT/isa/rv32ua" && ls *.S | sed 's/\.S$//') )
 SYS_TESTS=$(ls "$ROOT"/verif/system/*.S 2>/dev/null || true)
 
-iverilog -g2012 -DSIM -I "$RTL" -I "$ROOT/verif" -o "$OUT/tb_isa.vvp" "$RTL"/*.v "$HERE/tb_isa.v"
+iverilog -g2012 -DSIM $ISA_DEFS -I "$RTL" -I "$ROOT/verif" -o "$OUT/tb_isa.vvp" "$RTL"/*.v "$HERE/tb_isa.v"
 
 pass=0; fail=0; : > "$OUT/summary.txt"
 run_one() {   # run_one <name> <source.S>

@@ -5,7 +5,9 @@
 #   make sim-<name>  Run one testbench (mesi arbiter cache core dep corner quad repro)
 #   make isa         rv32ui + rv32ua riscv-tests and system tests on one core (RISCV_TESTS=<checkout>)
 #   make soc-isa     the same programs on the full 4-core SoC with caches (after make isa)
+#   make bench       riscv-tests benchmarks on the 4-core SoC (Verilator; RISCV_TESTS=<checkout>)
 #   make coh-random  Constrained-random coherence test of the memory system (SEEDS, OPS)
+#   make coh-mutants Check that coh-random fails on six designs with injected coherence bugs
 #   make sw          Build the demo programs in sw/ (hello, parsum, atomics, prodcons, litmus)
 #   make soc-run PROG=hello   Run a demo program on the full SoC (UART printed)
 #   make fpga-sim PROG=hello  Board-level simulation of fpga_top (UART decoded from the pin)
@@ -47,7 +49,7 @@ SOC_RTL   = $(CORE_RTL) $(CACHE_RTL) $(COH_RTL) $(MEM_RTL) $(IO_RTL) rtl/top/qua
 
 TESTS = mesi arbiter cache core dep corner quad
 
-.PHONY: all sim $(addprefix sim-,$(TESTS)) sim-repro isa synth soc-isa coh-random sw soc-run fpga-sim fpga program lint lint-soc synth-soc synth-fpga results animate gui clean help
+.PHONY: all sim $(addprefix sim-,$(TESTS)) sim-repro isa synth soc-isa bench coh-random coh-mutants sw soc-run fpga-sim fpga program lint lint-soc synth-soc synth-fpga results animate gui clean help
 
 all: sim
 
@@ -103,6 +105,16 @@ lint-soc: | $(OUT_DIR)
 soc-isa:
 	sh scripts/soc_isa.sh
 
+# Verilator model of the SoC testbench: same cycle counts as iverilog, about
+# 40x faster. Used for the benchmarks.
+VL_FLAGS = --binary --timing -O3 -j 4 -Wno-fatal -Wno-lint -Wno-style -DSIM -Irtl/core -Irtl/cache -Iverif
+$(OUT_DIR)/vl_soc/Vtb_soc: $(SOC_RTL) verif/soc/tb_soc.v
+	$(VERILATOR) $(VL_FLAGS) --top-module tb_soc -Mdir $(OUT_DIR)/vl_soc $(SOC_RTL) verif/soc/tb_soc.v > /dev/null
+
+# riscv-tests benchmarks on the SoC (RISCV_TESTS=<checkout>); see scripts/bench.sh
+bench: $(OUT_DIR)/vl_soc/Vtb_soc
+	sh scripts/bench.sh $(RISCV_TESTS)
+
 # Constrained-random coherence test: random loads, stores, amoadd and LR/SC
 # driven into the four L1D ports of the real memory system, every result
 # checked (see verif/coherence/tb_coh_random.v). OPS is per port.
@@ -114,6 +126,10 @@ coh-random: $(OUT_DIR)/coh_random.vvp
 	    grep -E '^(ERROR|RESULT|coherence|  )' $(OUT_DIR)/coh_random_$$s.log; \
 	    grep -q 'RESULT PASS' $(OUT_DIR)/coh_random_$$s.log || exit 1; \
 	done
+
+# The random test must fail on each of six designs with a deliberate coherence bug
+coh-mutants:
+	sh scripts/coh_mutants.sh
 
 $(OUT_DIR)/coh_random.vvp: $(SOC_RTL) verif/coherence/tb_coh_random.v | $(OUT_DIR)
 	$(IVERILOG) $(INC_FLAGS) -DNO_UART_ECHO -o $@ $(SOC_RTL) verif/coherence/tb_coh_random.v

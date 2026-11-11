@@ -35,9 +35,11 @@ for v in before after; do
   R=$V/$v/rtl/core
   iverilog -g2012 -DSIM -I "$R" -I "$ROOT/verif" -o "$V/$v/repro.vvp" "$R"/*.v "$ROOT/review/tb_repro.v"
   (cd "$V" && vvp -n "$v/repro.vvp" +trace > "$v/repro.log")
-  iverilog -g2012 -DSIM -I "$R" -I "$ROOT/verif" -o "$V/$v/isa.vvp" "$R"/*.v "$ROOT/verif/riscv-tests/tb_isa.v"
+  defs=""; grep -q dcache_amo "$R/riscv_ooo_core.v" || defs="-DNO_AMO_PORT"
+  iverilog -g2012 -DSIM $defs -I "$R" -I "$ROOT/verif" -o "$V/$v/isa.vvp" "$R"/*.v "$ROOT/verif/riscv-tests/tb_isa.v"
   vvp -n "$V/$v/isa.vvp" +hex="$V/demo.hex" +trace > "$V/$v/demo.log"
-  RTL=$R OUT=$V/$v/isa sh "$ROOT/verif/riscv-tests/run.sh" "$RVT" > /dev/null 2>&1 || true
+  defs=""; grep -q dcache_amo "$R/riscv_ooo_core.v" || defs="-DNO_AMO_PORT"
+  ISA_DEFS=$defs RTL=$R OUT=$V/$v/isa sh "$ROOT/verif/riscv-tests/run.sh" "$RVT" > /dev/null 2>&1 || true
   cp "$V/$v/isa/summary.txt" "$V/$v/isa_summary.txt"
 done
 # Does each core version get through Yosys elaboration?
@@ -53,7 +55,7 @@ done
 # fpga_top (make synth-fpga, slow: run it first to include it).
 # The ISA programs must have been built (the rv32ui runs above do that).
 mkdir -p "$V/soc"
-for p in hello parsum; do
+for p in hello parsum atomics prodcons litmus; do
   make -C "$ROOT" -s soc-run PROG=$p > /dev/null 2>&1 || true
   make -C "$ROOT" -s fpga-sim PROG=$p > /dev/null 2>&1 || true
   cp "$ROOT/build/sw/$p.log" "$ROOT/build/sw/$p.fpga.log" "$V/soc/" 2>/dev/null || true
@@ -62,4 +64,10 @@ done
 [ -n "$REUSE_SOC_ISA" ] || sh "$ROOT/scripts/soc_isa.sh" > /dev/null 2>&1 || true
 cp "$ROOT/build/soc/summary.txt" "$V/soc/isa_summary.txt" 2>/dev/null || true
 [ -f "$ROOT/build/synth_fpga.log" ] && cp "$ROOT/build/synth_fpga.log" "$V/soc/synth_fpga.log" || true
+# P3: random coherence test (3 seeds) and its mutation check
+mkdir -p "$V/coh"
+rm -f "$ROOT"/build/coh_random_*.log
+make -C "$ROOT" -s coh-random > /dev/null 2>&1 || true
+cp "$ROOT"/build/coh_random_*.log "$V/coh/" 2>/dev/null || true
+sh "$ROOT/scripts/coh_mutants.sh" > "$V/coh/mutants.txt" 2>&1 || true
 echo "collected into $V"
