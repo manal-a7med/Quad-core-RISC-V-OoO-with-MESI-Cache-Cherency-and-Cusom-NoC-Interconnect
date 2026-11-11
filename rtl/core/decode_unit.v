@@ -22,6 +22,12 @@ module decode_unit (
     output reg         uses_rs2,
     output reg         writes_rd,
     output reg         illegal_instr,
+    output reg         is_csr,        // CSRRW/S/C[I]; imm[11:0] = CSR address
+    output reg  [1:0]  csr_op,        // 01 write, 10 set, 11 clear
+    output reg         csr_uimm,      // source is the 5-bit rs1 field, not a register
+    output reg         is_ecall,
+    output reg         is_ebreak,
+    output reg         is_mret,
     output reg         decoded_valid
 );
 
@@ -42,6 +48,8 @@ module decode_unit (
         uses_rs2 = 1'b0;
         writes_rd = 1'b0;
         illegal_instr = 1'b0;
+        is_csr = 1'b0; csr_op = 2'b00; csr_uimm = 1'b0;
+        is_ecall = 1'b0; is_ebreak = 1'b0; is_mret = 1'b0;
         decoded_valid = instr_valid && (instr != 32'h00000013);
 
         case(opcode)
@@ -112,6 +120,33 @@ module decode_unit (
                 uses_rs1 = 1'b1; writes_rd = (rd != 5'd0); is_jump = 1'b1;
                 fu_type = `FU_BRANCH; alu_op = `ALU_ADD;
                 imm = {{20{instr[31]}}, instr[31:20]};
+            end
+            7'b0001111: begin // FENCE / FENCE.I: no-op on a single in-order-commit
+                fu_type = `FU_ALU; alu_op = `ALU_ADD; // core (memory ordering is P3)
+            end
+            7'b1110011: begin // SYSTEM
+                fu_type = `FU_ALU; alu_op = `ALU_PASS_B;
+                if (instr[14:12] == 3'b000) begin
+                    if (rd == 5'd0 && rs1 == 5'd0) begin
+                        case (instr[31:20])
+                            12'h000: is_ecall  = 1'b1;
+                            12'h001: is_ebreak = 1'b1;
+                            12'h302: is_mret   = 1'b1;
+                            12'h105: ;                     // WFI: no-op
+                            default: illegal_instr = 1'b1;
+                        endcase
+                    end else
+                        illegal_instr = 1'b1;
+                end else if (instr[14:12] == 3'b100) begin
+                    illegal_instr = 1'b1;
+                end else begin
+                    is_csr   = 1'b1;
+                    csr_op   = instr[13:12];
+                    csr_uimm = instr[14];
+                    uses_rs1 = !instr[14];
+                    writes_rd = (rd != 5'd0);
+                    imm      = {20'd0, instr[31:20]};
+                end
             end
             default: illegal_instr = 1'b1;
         endcase
