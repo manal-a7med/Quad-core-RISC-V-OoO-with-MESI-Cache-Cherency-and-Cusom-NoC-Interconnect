@@ -32,6 +32,16 @@ module tb_soc;
     for (k = 0; k < 16384; k = k + 1) dut.u_mem.mem[k >> 3][(k & 7) * 32 +: 32] = words[k];
   end
 
+  // +ctrace: print every instruction hart 0 retires (pc, rd, result), for
+  // comparing two versions of the design
+  reg ctrace;
+  initial ctrace = $test$plusargs("ctrace");
+  wire [3:0] ct_idx = dut.core_gen[0].u_core.rob_commit_idx;
+  always @(posedge clk) if (ctrace && rst_n && dut.core_gen[0].u_core.rob_commit_valid)
+    $display("C %h x%0d %h", dut.core_gen[0].u_core.u_rob.rob_pc[ct_idx],
+             dut.core_gen[0].u_core.rob_commit_writes_rd ? dut.core_gen[0].u_core.rob_commit_arch_rd : 5'd0,
+             dut.core_gen[0].u_core.rob_commit_result);
+
   // TOHOST detection at each core's data-cache port
   genvar g;
   generate for (g = 0; g < 4; g = g + 1) begin : mon

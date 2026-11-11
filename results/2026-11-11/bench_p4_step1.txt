@@ -1,0 +1,14 @@
+# riscv-tests benchmarks on the 4-core SoC (make bench), P4 step 1:
+# pipelined I-cache lookup (1 instruction per cycle) and loads no longer freezing issue (bug 12)
+# config B3; rv32ia_zicsr, gcc 13.2 -O2; RTL of the commit that added this file
+# <bench> <result> cycles=<whole run> region=<timed region> instret=<instructions in the region>
+dhrystone PASS cycles=869633 region=822065 instret=292029
+median PASS cycles=42424 region=13198 instret=4251
+multiply PASS cycles=126197 region=58349 instret=20897
+qsort PASS cycles=774357 region=386940 instret=123504
+rsort PASS cycles=927351 region=408982 instret=171130
+towers PASS cycles=28400 region=10956 instret=3751
+vvadd PASS cycles=27214 region=6391 instret=2413
+memcpy PASS cycles=650860 region=284171 instret=80021
+mt-vvadd PASS cycles=373126 region=113671 instret=-
+mt-matmul PASS cycles=66907 region=50138 instret=-

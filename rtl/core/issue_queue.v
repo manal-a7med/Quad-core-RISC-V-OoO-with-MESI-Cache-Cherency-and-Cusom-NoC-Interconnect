@@ -66,6 +66,7 @@ module issue_queue (
     // Status
     output wire        iq_full,
     input  wire        issue_stall,
+    input  wire        mem_ready,    // the load/store queue has room for one more
     input  wire [3:0]  rob_head,     // ROB head: program-order age reference
     input  wire        flush
 );
@@ -121,7 +122,7 @@ module issue_queue (
 
     // ========================================================================
     // Find ready-to-issue entry (oldest with both operands ready)
-    // Loads wait if an older store or an older load is still in the IQ
+    // Loads and stores wait for older loads and stores still in the IQ
     // ========================================================================
     reg [2:0] issue_slot;
     reg       issue_found;
@@ -146,13 +147,19 @@ module issue_queue (
         ii = 0; si = 0;
         if (!issue_stall) begin
             for (ii = 0; ii < `IQ_DEPTH; ii = ii + 1) begin
-                // A load may not issue while an older store is still in the IQ
-                // (its address is unknown, so the LSQ cannot disambiguate),
-                // nor while an older load is: loads reach the LSQ in program
-                // order, so two loads of the same bytes can be kept in order
-                // there (RVWMO same-address load-load rule, the CoRR test).
+                // Loads and stores issue in program order among themselves.
+                // - A load may not pass an older store still in the IQ (its
+                //   address is unknown, so the LSQ cannot disambiguate), nor
+                //   an older load: two loads of the same bytes are kept in
+                //   order in the LSQ (RVWMO load-load rule, the CoRR test).
+                // - A store may not pass older loads or stores either. Every
+                //   LSQ entry is then older than every load/store waiting
+                //   here, so a full LSQ always drains by itself and cannot
+                //   be holding the slot an older instruction needs.
+                // They also wait until the LSQ has a slot for them.
                 older_store_pending = 1'b0;
-                if (iq_is_load[ii]) begin
+                if (iq_is_load[ii] || iq_is_store[ii]) begin
+                    if (!mem_ready) older_store_pending = 1'b1;
                     for (si = 0; si < `IQ_DEPTH; si = si + 1) begin
                         if (iq_valid[si] && (iq_is_store[si] || iq_is_load[si]) &&
                             (rel_age(iq_rob_idx[si], rob_head) < rel_age(iq_rob_idx[ii], rob_head)))

@@ -33,14 +33,18 @@ module load_store_unit (
     output reg  [2:0]  dcache_mem_type,
     output reg  [3:0]  dcache_amo,
 
-    // Result broadcast (loads return data via CDB)
-    output reg         result_valid,
-    output reg  [31:0] result_data,
-    output reg  [5:0]  result_phys_rd,
-    output reg  [3:0]  result_rob_idx,
+    // Result broadcast (loads return data via CDB). A result is shown until
+    // the core takes it (result_accept): the core's result bus gives way to
+    // the instruction executing that cycle.
+    output wire        result_valid,
+    output wire [31:0] result_data,
+    output wire [5:0]  result_phys_rd,
+    output wire [3:0]  result_rob_idx,
+    input  wire        result_accept,
 
     // Status and control
     output wire        lsq_full,
+    output wire        lsq_ready,        // a load/store selected for issue this cycle will find a slot
     input  wire        commit_store_en,
     input  wire [3:0]  commit_rob_idx,   // ROB index of the committing store
     input  wire [3:0]  rob_head,         // program-order age reference
@@ -67,16 +71,26 @@ module load_store_unit (
     reg [4:0]  count;
     reg [3:0]  free_slot;
     reg        free_found;
+    reg        free_two;                   // at least two free slots
     assign lsq_full = !free_found;
+    // The issue queue registers its choice, so an instruction it selects now
+    // arrives here next cycle, after the one arriving this cycle (if any) has
+    // taken its slot. Without this the queue could be handed a store with no
+    // slot left and the store was lost (the ROB still marked it complete).
+    assign lsq_ready = free_two || (free_found && !enqueue_en);
     integer    fi;
 
     always @(*) begin
         free_slot  = 4'd0;
         free_found = 1'b0;
+        free_two   = 1'b0;
         for (fi = 0; fi < DEPTH; fi = fi + 1) begin
-            if (!lsq_valid[fi] && !free_found) begin
-                free_slot  = fi[3:0];
-                free_found = 1'b1;
+            if (!lsq_valid[fi]) begin
+                if (free_found) free_two = 1'b1;
+                else begin
+                    free_slot  = fi[3:0];
+                    free_found = 1'b1;
+                end
             end
         end
     end
@@ -93,6 +107,20 @@ module load_store_unit (
 
     reg [2:0]  lsq_state;
     reg [3:0]  active_idx;
+
+    // Results waiting for the core: one holder for loads answered by the
+    // cache and one for forwarded loads, so neither overwrites the other.
+    // (The cache path cannot produce a second result before the first is
+    // taken: the core takes a result within two cycles, and the next cache
+    // access needs three.)
+    reg        ld_res_valid, fw_res_valid;
+    reg [31:0] ld_res_data,  fw_res_data;
+    reg [5:0]  ld_res_phys,  fw_res_phys;
+    reg [3:0]  ld_res_rob,   fw_res_rob;
+    assign result_valid   = ld_res_valid || fw_res_valid;
+    assign result_data    = ld_res_valid ? ld_res_data : fw_res_data;
+    assign result_phys_rd = ld_res_valid ? ld_res_phys : fw_res_phys;
+    assign result_rob_idx = ld_res_valid ? ld_res_rob  : fw_res_rob;
     reg        active_squashed;  // in-flight load was flushed: drop its result
 
     // ========================================================================
@@ -232,8 +260,11 @@ module load_store_unit (
     // Main Logic
     // ========================================================================
     integer k;
-    // An atomic is never satisfied by forwarding: it must reach the cache
-    wire fwd_use  = is_load && fwd_found && (amo_op == `AMO_NONE);
+    // An atomic is never satisfied by forwarding: it must reach the cache.
+    // A forwarded load needs the forwarding holder; if the previous forwarded
+    // result is still waiting there, this load takes a queue slot instead and
+    // reads the cache once the store has been written.
+    wire fwd_use  = is_load && fwd_found && (amo_op == `AMO_NONE) && !fw_res_valid;
     wire do_alloc = enqueue_en && !lsq_full && free_found && !fwd_use;
     wire do_free  = ((lsq_state == LSQ_LOAD_WAIT) || (lsq_state == LSQ_STORE_WAIT)) && dcache_ack;
 
@@ -244,7 +275,8 @@ module load_store_unit (
             dcache_req   <= 1'b0;
             dcache_wr    <= 1'b0;
             dcache_amo   <= 4'd0;
-            result_valid <= 1'b0;
+            ld_res_valid <= 1'b0;
+            fw_res_valid <= 1'b0;
             active_squashed <= 1'b0;
             sq_head      <= 3'd0;
             sq_tail      <= 3'd0;
@@ -255,9 +287,15 @@ module load_store_unit (
                 lsq_committed[k] <= 1'b0;
             end
         end else begin
-            result_valid <= 1'b0;
+            if (result_accept) begin
+                if (ld_res_valid) ld_res_valid <= 1'b0;
+                else              fw_res_valid <= 1'b0;
+            end
 
           if (flush) begin
+            // Results still waiting belong to squashed instructions
+            ld_res_valid <= 1'b0;
+            fw_res_valid <= 1'b0;
             // A load already sent to the cache must finish its handshake, but
             // its result belongs to a squashed instruction and must not reach
             // the CDB (its physical register may already be reallocated).
@@ -276,10 +314,10 @@ module load_store_unit (
             if (enqueue_en && !lsq_full) begin
                 if (fwd_use) begin
                     // Forwarded load completes immediately without occupying slot
-                    result_valid   <= 1'b1;
-                    result_data    <= fwd_data;
-                    result_phys_rd <= phys_rd;
-                    result_rob_idx <= rob_idx;
+                    fw_res_valid <= 1'b1;
+                    fw_res_data  <= fwd_data;
+                    fw_res_phys  <= phys_rd;
+                    fw_res_rob   <= rob_idx;
                 end else if (free_found) begin
                     lsq_valid[free_slot]     <= 1'b1;
                     lsq_is_load[free_slot]   <= is_load;
@@ -351,12 +389,11 @@ module load_store_unit (
                             lsq_valid[active_idx]     <= 1'b0;
                         end
 
-                        result_valid   <= !active_squashed && !flush;
+                        ld_res_valid    <= !active_squashed && !flush;
                         active_squashed <= 1'b0;
-                        result_phys_rd <= lsq_phys_rd[active_idx];
-                        result_rob_idx <= lsq_rob_idx[active_idx];
-
-                        result_data <= extend(lsq_mem_type[active_idx], dcache_rdata);
+                        ld_res_phys     <= lsq_phys_rd[active_idx];
+                        ld_res_rob      <= lsq_rob_idx[active_idx];
+                        ld_res_data     <= extend(lsq_mem_type[active_idx], dcache_rdata);
                     end
                 end
 
