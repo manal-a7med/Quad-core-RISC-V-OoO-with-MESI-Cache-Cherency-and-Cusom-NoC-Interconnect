@@ -24,8 +24,13 @@ module register_file (
     input  wire        flush
 );
 
+    // Register values: no reset and one write port, so they map to LUT RAM.
+    // They power up as zero (FPGA INIT / simulation); a reset does not
+    // clear them (software must not rely on register values after reset).
     reg [31:0] regs [0:63];
     reg [63:0] ready_bits;
+    integer i;
+    initial for (i = 0; i < 64; i = i + 1) regs[i] = 32'd0;
 
     assign rd_data1 = (rd_addr1 == 6'd0) ? 32'd0 : regs[rd_addr1];
     assign rd_data2 = (rd_addr2 == 6'd0) ? 32'd0 : regs[rd_addr2];
@@ -33,17 +38,15 @@ module register_file (
     assign ready_rd1 = (rd_addr1 == 6'd0) ? 1'b1 : ready_bits[rd_addr1];
     assign ready_rd2 = (rd_addr2 == 6'd0) ? 1'b1 : ready_bits[rd_addr2];
 
-    integer i;
+    always @(posedge clk) begin
+        if (wr_en && wr_addr != 6'd0)
+            regs[wr_addr] <= wr_data;
+    end
+
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             ready_bits <= {64{1'b1}};
-            for (i = 0; i < 64; i = i + 1) begin
-                regs[i] <= 32'd0;
-            end
         end else begin
-            if (wr_en && wr_addr != 6'd0) begin
-                regs[wr_addr] <= wr_data;
-            end
             if (flush) begin
                 ready_bits <= {64{1'b1}};
             end else begin

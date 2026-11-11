@@ -1,254 +1,208 @@
 `timescale 1ns / 1ps
-`define SIM
-
+// ============================================================================
+// tb_cache.v - L1 data cache unit test (MESI transitions, data, write-back)
+// ============================================================================
+// The CPU side uses the real req/ack handshake (no fixed delays), a small bus
+// model answers bus requests from a line memory a few cycles later, and
+// snoops are injected for one cycle like the snoop controller does. A HITM
+// snoop's data is written back to the line memory, as the L2 would be.
+// ============================================================================
 `include "mesi_defines.vh"
 `include "common_defs.vh"
 
 module tb_cache;
-    reg         clk;
-    reg         rst_n;
+    reg clk = 0, rst_n = 0;
+    always #5 clk = ~clk;
 
-    // CPU Interface
-    reg  [31:0] cpu_addr;
-    reg  [31:0] cpu_wdata;
-    wire [31:0] cpu_rdata;
-    reg         cpu_req;
-    reg         cpu_wr;
-    wire        cpu_ack;
-    reg  [2:0]  cpu_mem_type;
-
-    // Bus Interface (simulated responses)
+    reg  [31:0]  cpu_addr = 0, cpu_wdata = 0;
+    wire [31:0]  cpu_rdata;
+    reg          cpu_req = 0, cpu_wr = 0;
+    wire         cpu_ack;
+    reg  [2:0]   cpu_mem_type = `MEM_WORD;
     wire [31:0]  bus_addr;
     wire [255:0] bus_wdata;
-    reg  [255:0] bus_rdata;
+    reg  [255:0] bus_rdata = 0;
     wire         bus_req;
     wire [2:0]   bus_cmd;
-    reg          bus_ack;
-    reg          bus_grant;
-    reg          bus_shared;
-
-    // Snoop Interface
-    reg  [31:0]  snoop_addr;
-    reg  [2:0]   snoop_cmd;
-    reg          snoop_valid;
+    reg          bus_ack = 0, bus_grant = 0, bus_shared = 0;
+    reg  [31:0]  snoop_addr = 0;
+    reg  [2:0]   snoop_cmd = 0;
+    reg          snoop_valid = 0;
     wire [1:0]   snoop_resp;
     wire [255:0] snoop_data;
     wire         snoop_data_valid;
 
     l1_dcache dut (
-        .clk             (clk),
-        .rst_n           (rst_n),
-        .cpu_addr        (cpu_addr),
-        .cpu_wdata       (cpu_wdata),
-        .cpu_rdata       (cpu_rdata),
-        .cpu_req         (cpu_req),
-        .cpu_wr          (cpu_wr),
-        .cpu_ack         (cpu_ack),
-        .cpu_mem_type    (cpu_mem_type),
-        .bus_addr        (bus_addr),
-        .bus_wdata       (bus_wdata),
-        .bus_rdata       (bus_rdata),
-        .bus_req         (bus_req),
-        .bus_cmd         (bus_cmd),
-        .bus_ack         (bus_ack),
-        .bus_grant       (bus_grant),
-        .bus_shared      (bus_shared),
-        .snoop_addr      (snoop_addr),
-        .snoop_cmd       (snoop_cmd),
-        .snoop_valid     (snoop_valid),
-        .snoop_resp      (snoop_resp),
-        .snoop_data      (snoop_data),
-        .snoop_data_valid(snoop_data_valid)
-    );
+        .clk(clk), .rst_n(rst_n),
+        .cpu_addr(cpu_addr), .cpu_wdata(cpu_wdata), .cpu_rdata(cpu_rdata), .cpu_req(cpu_req),
+        .cpu_wr(cpu_wr), .cpu_ack(cpu_ack), .cpu_mem_type(cpu_mem_type),
+        .bus_addr(bus_addr), .bus_wdata(bus_wdata), .bus_rdata(bus_rdata), .bus_req(bus_req),
+        .bus_cmd(bus_cmd), .bus_ack(bus_ack), .bus_grant(bus_grant), .bus_shared(bus_shared),
+        .snoop_addr(snoop_addr), .snoop_cmd(snoop_cmd), .snoop_valid(snoop_valid),
+        .snoop_resp(snoop_resp), .snoop_data(snoop_data), .snoop_data_valid(snoop_data_valid));
 
-    always #5 clk = ~clk;
+    // ------------------------------------------------------------------
+    // Bus model: line memory indexed by addr[12:5]; answers 3 cycles after
+    // a request with a one-cycle grant + ack
+    // ------------------------------------------------------------------
+    reg [255:0] mem [0:255];
+    reg         shared_next = 0;     // bus_shared for the next fill
+    integer     n_read = 0, n_readx = 0, n_upgr = 0, n_flush = 0, bwait = 0;
+    always @(negedge clk) begin
+        if (bus_ack) begin
+            bus_ack = 0; bus_grant = 0; bus_shared = 0; bwait = 0;
+        end else if (bus_req) begin
+            if (bwait == 2) begin
+                case (bus_cmd)
+                    `BUS_READ:  n_read  = n_read + 1;
+                    `BUS_READX: n_readx = n_readx + 1;
+                    `BUS_UPGR:  n_upgr  = n_upgr + 1;
+                    `BUS_FLUSH: begin n_flush = n_flush + 1; mem[bus_addr[12:5]] = bus_wdata; end
+                    default: ;
+                endcase
+                bus_rdata  = mem[bus_addr[12:5]];
+                bus_shared = shared_next;
+                bus_grant  = 1; bus_ack = 1; bwait = 0;
+            end else bwait = bwait + 1;
+        end else bwait = 0;
+    end
 
-    integer pass_count = 0;
-    integer fail_count = 0;
-
-    // Simulate memory/bus response
-    task auto_bus_respond;
-        input [255:0] line_data;
-        input         shared_flag;
+    // ------------------------------------------------------------------
+    // Helpers
+    // ------------------------------------------------------------------
+    integer pass_count = 0, fail_count = 0;
+    task check(input cond, input [8*64-1:0] what);
         begin
-            bus_grant  = 1;
-            bus_shared = shared_flag;
-            #10;
-            bus_rdata  = line_data;
-            bus_ack    = 1;
-            #10;
-            bus_ack    = 0;
-            bus_grant  = 0;
-            bus_shared = 0;
+            if (cond) begin pass_count = pass_count + 1; $display("  PASS: %0s", what); end
+            else      begin fail_count = fail_count + 1; $display("  FAIL: %0s", what); end
         end
     endtask
 
+    reg [31:0] rd; integer cyc;
+    task access(input [31:0] a, input wr, input [31:0] wd, input [2:0] mt);
+        begin
+            @(negedge clk);
+            cpu_addr = a; cpu_wr = wr; cpu_wdata = wd; cpu_mem_type = mt; cpu_req = 1; cyc = 0;
+            @(negedge clk); #1;              // (#1: let other negedge drivers settle)
+            while (!cpu_ack && cyc < 200) begin @(negedge clk); #1; cyc = cyc + 1; end
+            rd = cpu_rdata;
+            if (!cpu_ack) $display("  (no ack for %h)", a);
+            @(posedge clk); #1 cpu_req = 0; cpu_wr = 0;
+        end
+    endtask
+    task load(input [31:0] a);                    begin access(a, 0, 0, `MEM_WORD); end endtask
+    task store(input [31:0] a, input [31:0] d);   begin access(a, 1, d, `MEM_WORD); end endtask
+
+    reg [1:0] s_resp; reg s_dv; reg [255:0] s_data;
+    task snoop(input [31:0] a, input [2:0] cmd);
+        begin
+            @(negedge clk); snoop_addr = a; snoop_cmd = cmd; snoop_valid = 1;
+            @(negedge clk); snoop_valid = 0;
+            s_resp = snoop_resp; s_dv = snoop_data_valid; s_data = snoop_data;
+            if (s_resp == `SNOOP_HITM) mem[a[12:5]] = s_data;     // to "L2"
+        end
+    endtask
+
+    function [1:0] line_state(input [31:0] a);
+        reg [5:0] i; reg [1:0] s0, s1;
+        begin
+            i = a[10:5];
+            s0 = dut.state_bits[{1'b0, i}*2 +: 2];
+            s1 = dut.state_bits[{1'b1, i}*2 +: 2];
+            if      (s0 != `MESI_INVALID && dut.tag0[i] == a[31:11]) line_state = s0;
+            else if (s1 != `MESI_INVALID && dut.tag1[i] == a[31:11]) line_state = s1;
+            else line_state = `MESI_INVALID;
+        end
+    endfunction
+
+    integer k, r0, rx0, u0, f0;
+    task bus_mark; begin r0 = n_read; rx0 = n_readx; u0 = n_upgr; f0 = n_flush; end endtask
+
     initial begin
-        $dumpfile("cache_test.vcd");
-        $dumpvars(0, tb_cache);
-
-        clk = 0; rst_n = 0;
-        cpu_addr = 0; cpu_wdata = 0; cpu_req = 0; cpu_wr = 0;
-        cpu_mem_type = 3'b010; // Word
-        bus_rdata = 0; bus_ack = 0; bus_grant = 0; bus_shared = 0;
-        snoop_addr = 0; snoop_cmd = 0; snoop_valid = 0;
-
-        #20 rst_n = 1;
-        #10;
+        for (k = 0; k < 256; k = k + 1)
+            mem[k] = {32'h8 + k, 32'h7 + k, 32'h6 + k, 32'h5 + k, 32'h4 + k, 32'h3 + k, 32'h2 + k, 32'h1 + k} - {8{32'h80}};
+        // line 0x80 (address 0x1000) holds words 1..8
+        #22 rst_n = 1;
 
         $display("============================================================");
-        $display(" L1 Data Cache — Comprehensive MESI Unit Tests");
+        $display(" L1 Data Cache - MESI unit tests (handshake based)");
         $display("============================================================");
 
-        // ---- Test 1: Read Miss → Allocate (I -> E) ----
-        $display("");
-        $display("--- Test 1: Read Miss (I -> E Allocate) ---");
-        cpu_addr = 32'h0000_1000;
-        cpu_req  = 1;
-        cpu_wr   = 0;
-        #10;
+        $display("--- 1: read miss, I -> E");
+        bus_mark; load(32'h1000);
+        check(rd == 32'h1 && n_read == r0 + 1, "read miss returns word 0 after one BusRd");
+        check(line_state(32'h1000) == `MESI_EXCLUSIVE, "line is Exclusive");
 
-        if (bus_req && bus_cmd == `BUS_READ) begin
-            $display("  INFO: BusRd issued (cmd=%b addr=0x%08h)", bus_cmd, bus_addr);
-            auto_bus_respond({32'hDEAD_BEEF, 32'h0000_0007, 32'h0000_0006,
-                              32'h0000_0005, 32'h0000_0004, 32'h0000_0003,
-                              32'h0000_0002, 32'h0000_0001}, 1'b0);
-        end
+        $display("--- 2: read hit");
+        bus_mark; load(32'h101C);
+        check(rd == 32'h8 && n_read == r0 && cyc == 0, "read hit returns word 7 in two cycles, no bus traffic");
 
-        #10;
-        if (cpu_ack && cpu_rdata == 32'h0000_0001) begin
-            $display("  PASS: Read miss handled, data=0x%08h (state=E)", cpu_rdata);
-            pass_count = pass_count + 1;
-        end else begin
-            $display("  FAIL: Read miss ack=%b data=0x%08h", cpu_ack, cpu_rdata);
-            fail_count = fail_count + 1;
-        end
-        cpu_req = 0;
-        #20;
+        $display("--- 3: store hit on E, silent E -> M");
+        bus_mark; store(32'h1000, 32'hCAFE_BABE);
+        check(n_read + n_readx + n_upgr == r0 + rx0 + u0, "no bus traffic");
+        check(line_state(32'h1000) == `MESI_MODIFIED, "line is Modified");
+        load(32'h1000);
+        check(rd == 32'hCAFE_BABE, "store visible to a later load");
 
-        // ---- Test 2: Read Hit (Word 7 of same cache line) ----
-        $display("");
-        $display("--- Test 2: Read Hit (Offset 0x1C) ---");
-        cpu_addr = 32'h0000_101C;
-        cpu_req  = 1;
-        cpu_wr   = 0;
-        #20;
-        if (cpu_ack && cpu_rdata == 32'hDEAD_BEEF && !bus_req) begin
-            $display("  PASS: Read hit, ack=%b data=0x%08h", cpu_ack, cpu_rdata);
-            pass_count = pass_count + 1;
-        end else begin
-            $display("  FAIL: Read hit ack=%b data=0x%08h", cpu_ack, cpu_rdata);
-            fail_count = fail_count + 1;
-        end
-        cpu_req = 0;
-        #20;
+        $display("--- 4: snoop BusRd on M -> S with HITM");
+        snoop(32'h1000, `BUS_READ);
+        check(s_resp == `SNOOP_HITM && s_dv && s_data[31:0] == 32'hCAFE_BABE, "HITM, supplies the modified line");
+        check(line_state(32'h1000) == `MESI_SHARED, "line is Shared");
+        @(negedge clk);
+        check(snoop_resp == `SNOOP_NONE && !snoop_data_valid, "response cleared after one cycle");
 
-        // ---- Test 3: Write Hit on Exclusive (Silent E -> M) ----
-        $display("");
-        $display("--- Test 3: Write Hit on Exclusive (Silent E -> M) ---");
-        cpu_addr  = 32'h0000_1000;
-        cpu_wdata = 32'hCAFE_BABE;
-        cpu_req   = 1;
-        cpu_wr    = 1;
-        #20;
-        if (cpu_ack && !bus_req) begin
-            $display("  PASS: Silent Write Hit E->M, ack=%b", cpu_ack);
-            pass_count = pass_count + 1;
-        end else begin
-            $display("  FAIL: Write hit ack=%b bus_req=%b", cpu_ack, bus_req);
-            fail_count = fail_count + 1;
-        end
-        cpu_req = 0;
-        cpu_wr  = 0;
-        #20;
+        $display("--- 5: store hit on S -> BusUpgr -> M");
+        bus_mark; store(32'h1004, 32'h1234_5678);
+        check(n_upgr == u0 + 1, "one BusUpgr");
+        check(line_state(32'h1004) == `MESI_MODIFIED, "line is Modified");
+        load(32'h1004); check(rd == 32'h1234_5678, "upgraded store visible");
+        load(32'h1000); check(rd == 32'hCAFE_BABE, "rest of the line kept");
 
-        // ---- Test 4: Snoop BusRd on Modified Line (M -> S + HITM data supply) ----
-        $display("");
-        $display("--- Test 4: Snoop BusRd on Modified Line (M -> S, HITM) ---");
-        snoop_addr  = 32'h0000_1000;
-        snoop_cmd   = `BUS_READ;
-        snoop_valid = 1;
-        #20;
-        snoop_valid = 0;
-        if (snoop_resp == `SNOOP_HITM && snoop_data_valid && snoop_data[31:0] == 32'hCAFE_BABE) begin
-            $display("  PASS: Snoop BusRd -> HITM (resp=%b), supplied modified word 0x%08h", snoop_resp, snoop_data[31:0]);
-            pass_count = pass_count + 1;
-        end else begin
-            $display("  FAIL: Snoop BusRd resp=%b dvalid=%b data=0x%08h", snoop_resp, snoop_data_valid, snoop_data[31:0]);
-            fail_count = fail_count + 1;
-        end
-        #20;
+        $display("--- 6: snoop BusRdX on M -> I with HITM");
+        snoop(32'h1000, `BUS_READX);
+        check(s_resp == `SNOOP_HITM && s_dv && s_data[63:32] == 32'h1234_5678, "HITM, supplies word 1");
+        check(line_state(32'h1000) == `MESI_INVALID, "line is Invalid");
 
-        // ---- Test 5: Write Hit on Shared Line (S -> M via BusUpgr) ----
-        $display("");
-        $display("--- Test 5: Write Hit on Shared Line (S -> M via BusUpgr) ---");
-        cpu_addr  = 32'h0000_1004;
-        cpu_wdata = 32'h1234_5678;
-        cpu_req   = 1;
-        cpu_wr    = 1;
-        #10;
-        if (bus_req && bus_cmd == `BUS_UPGR) begin
-            $display("  INFO: BusUpgr issued (cmd=%b addr=0x%08h)", bus_cmd, bus_addr);
-            auto_bus_respond(256'd0, 1'b0);
-        end
-        #10;
-        if (cpu_ack) begin
-            $display("  PASS: Write Hit S->M completed after BusUpgr, ack=%b", cpu_ack);
-            pass_count = pass_count + 1;
-        end else begin
-            $display("  FAIL: Write Hit S->M failed, ack=%b", cpu_ack);
-            fail_count = fail_count + 1;
-        end
-        cpu_req = 0;
-        cpu_wr  = 0;
-        #20;
+        $display("--- 7: store miss -> BusRdX -> M");
+        bus_mark; store(32'h1000, 32'hABCD_EF01);
+        check(n_readx == rx0 + 1, "one BusRdX");
+        check(line_state(32'h1000) == `MESI_MODIFIED, "line is Modified");
+        load(32'h1000); check(rd == 32'hABCD_EF01, "store merged into the fetched line");
+        load(32'h1004); check(rd == 32'h1234_5678, "other words come from memory");
 
-        // ---- Test 6: Snoop BusRdX (M -> I Invalidate + HITM) ----
-        $display("");
-        $display("--- Test 6: Snoop BusRdX (M -> I Invalidate) ---");
-        snoop_addr  = 32'h0000_1000;
-        snoop_cmd   = `BUS_READX;
-        snoop_valid = 1;
-        #20;
-        snoop_valid = 0;
-        if (snoop_resp == `SNOOP_HITM && snoop_data_valid && snoop_data[63:32] == 32'h1234_5678) begin
-            $display("  PASS: Snoop BusRdX -> HITM & invalidated, word1=0x%08h", snoop_data[63:32]);
-            pass_count = pass_count + 1;
-        end else begin
-            $display("  FAIL: Snoop BusRdX resp=%b", snoop_resp);
-            fail_count = fail_count + 1;
-        end
-        #20;
+        $display("--- 8: byte and halfword stores");
+        access(32'h1009, 1, 32'h0000_00AA, `MEM_BYTE);
+        access(32'h100E, 1, 32'h0000_BEEF, `MEM_HALF);
+        load(32'h1008); check(rd == 32'h0000_AA03, "sb at byte 1 of word 2");
+        load(32'h100C); check(rd == 32'hBEEF_0004, "sh at bytes 2-3 of word 3");
+        access(32'h1009, 0, 0, `MEM_BYTE_U); check(rd[7:0] == 8'hAA, "byte read is aligned to bit 0");
 
-        // ---- Test 7: Write Miss on Invalidated Line (I -> M via BusRdX) ----
-        $display("");
-        $display("--- Test 7: Write Miss on Invalidated Line (I -> M via BusRdX) ---");
-        cpu_addr  = 32'h0000_1000;
-        cpu_wdata = 32'hABCD_EF01;
-        cpu_req   = 1;
-        cpu_wr    = 1;
-        #10;
-        if (bus_req && bus_cmd == `BUS_READX) begin
-            $display("  INFO: BusRdX issued (cmd=%b addr=0x%08h)", bus_cmd, bus_addr);
-            auto_bus_respond({224'd0, 32'h0000_0001}, 1'b0);
-        end
-        #10;
-        if (cpu_ack) begin
-            $display("  PASS: Write Miss I->M completed via BusRdX, ack=%b", cpu_ack);
-            pass_count = pass_count + 1;
-        end else begin
-            $display("  FAIL: Write Miss I->M ack=%b", cpu_ack);
-            fail_count = fail_count + 1;
-        end
-        cpu_req = 0;
-        cpu_wr  = 0;
-        #20;
+        $display("--- 9: dirty eviction writes the line back");
+        load(32'h1800);                      // same set, other way
+        bus_mark; load(32'h2000);            // evicts the LRU way: 0x1000 (M)
+        check(n_flush == f0 + 1, "one BusFlush");
+        check(mem[8'h80][31:0] == 32'hABCD_EF01 && mem[8'h80][95:64] == 32'h0000_AA03,
+              "written-back line holds the stores");
+        check(line_state(32'h1000) == `MESI_INVALID && line_state(32'h2000) == `MESI_EXCLUSIVE,
+              "victim invalid, new line Exclusive");
+
+        $display("--- 10: snoop in the same cycle as a store hit (bug 13)");
+        // 0x1800 is Exclusive. The store reaches COMPARE_TAG in the same
+        // cycle as a BusRdX snoop; the store must not be lost.
+        fork
+            store(32'h1800, 32'h5555_AAAA);
+            begin @(negedge clk); snoop(32'h1800, `BUS_READX); end
+        join
+        check(s_resp == `SNOOP_HIT && !s_dv, "snoop saw the clean line (store waited)");
+        check(line_state(32'h1800) == `MESI_MODIFIED, "store then refetched the line (M)");
+        load(32'h1800); check(rd == 32'h5555_AAAA, "store not lost");
 
         $display("");
         $display("============================================================");
         $display(" Cache Test Complete: %0d PASSED, %0d FAILED", pass_count, fail_count);
         $display("============================================================");
-
-        #30 $finish;
+        #20 $finish;
     end
+
+    initial begin #200000; $display("TIMEOUT FAILED"); $finish; end
 endmodule
