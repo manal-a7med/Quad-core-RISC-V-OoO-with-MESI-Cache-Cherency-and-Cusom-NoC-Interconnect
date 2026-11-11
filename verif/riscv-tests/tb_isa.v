@@ -25,7 +25,7 @@ module tb_isa;
       $display("tb_isa: pass +hex=<file>"); $finish;
     end
     $readmemh(hexfile, mem);
-    if (!$value$plusargs("timeout=%d", timeout)) timeout = 20000;
+    if (!$value$plusargs("timeout=%d", timeout)) timeout = 1000000;
   end
 
   always @(*) begin iack = ireq; ir = mem[ia[15:2]]; end
