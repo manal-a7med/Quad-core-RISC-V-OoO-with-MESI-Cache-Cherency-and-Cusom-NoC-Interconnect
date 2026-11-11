@@ -186,6 +186,13 @@ module load_store_unit (
     reg        uncomm_store_found;
     integer    nl_i;
 
+    // FIFO of committed stores (LSQ slot numbers) in commit order. Stores must
+    // reach memory in program order: same-address order for one core, and the
+    // order other cores and I/O devices observe (data before flag, UART bytes).
+    reg [3:0]  sq_fifo [0:DEPTH-1];
+    reg [2:0]  sq_head, sq_tail;
+    reg [3:0]  sq_count;
+
     always @(*) begin
         next_load_found    = 1'b0;
         next_load_idx      = 4'd0;
@@ -193,14 +200,15 @@ module load_store_unit (
         next_store_idx     = 4'd0;
         uncomm_store_found = 1'b0;
         uncomm_store_idx   = 4'd0;
+        // Committed stores are written in commit (program) order: oldest first
+        if (sq_count != 4'd0) begin
+            next_store_idx   = sq_fifo[sq_head];
+            next_store_found = 1'b1;
+        end
         for (nl_i = 0; nl_i < DEPTH; nl_i = nl_i + 1) begin
             if (lsq_valid[nl_i] && lsq_is_load[nl_i] && !lsq_completed[nl_i] && !ld_blocked[nl_i] && !next_load_found) begin
                 next_load_idx   = nl_i[3:0];
                 next_load_found = 1'b1;
-            end
-            if (lsq_valid[nl_i] && lsq_is_store[nl_i] && lsq_committed[nl_i] && !lsq_completed[nl_i] && !next_store_found) begin
-                next_store_idx   = nl_i[3:0];
-                next_store_found = 1'b1;
             end
             if (lsq_valid[nl_i] && lsq_is_store[nl_i] && !lsq_committed[nl_i] &&
                 lsq_rob_idx[nl_i] == commit_rob_idx && !uncomm_store_found) begin
@@ -225,13 +233,18 @@ module load_store_unit (
             dcache_wr    <= 1'b0;
             result_valid <= 1'b0;
             active_squashed <= 1'b0;
+            sq_head      <= 3'd0;
+            sq_tail      <= 3'd0;
+            sq_count     <= 4'd0;
             for (k = 0; k < DEPTH; k = k + 1) begin
                 lsq_valid[k]     <= 1'b0;
                 lsq_completed[k] <= 1'b0;
                 lsq_committed[k] <= 1'b0;
             end
-        end else if (flush) begin
+        end else begin
             result_valid <= 1'b0;
+
+          if (flush) begin
             // A load already sent to the cache must finish its handshake, but
             // its result belongs to a squashed instruction and must not reach
             // the CDB (its physical register may already be reallocated).
@@ -243,9 +256,7 @@ module load_store_unit (
                     lsq_completed[k] <= 1'b0;
                 end
             end
-        end else begin
-            result_valid <= 1'b0;
-
+          end else begin
             // -----------------------------------------------------------------
             // Enqueue new load/store
             // -----------------------------------------------------------------
@@ -273,12 +284,19 @@ module load_store_unit (
             // -----------------------------------------------------------------
             // Mark store as committed (safe to write to cache)
             // -----------------------------------------------------------------
+            // (A flush never coincides with a store commit: only the
+            // committing branch or trapping instruction flushes.)
             if (commit_store_en && uncomm_store_found) begin
                 lsq_committed[uncomm_store_idx] <= 1'b1;
+                sq_fifo[sq_tail] <= uncomm_store_idx;
+                sq_tail          <= sq_tail + 3'd1;
             end
+          end
 
             // -----------------------------------------------------------------
-            // Cache access FSM
+            // Cache access FSM. It also runs during a flush, so that a
+            // one-cycle acknowledge (I/O) is never missed and an access is
+            // never repeated; only new loads wait until the flush is over.
             // -----------------------------------------------------------------
             case (lsq_state)
                 LSQ_IDLE: begin
@@ -291,7 +309,7 @@ module load_store_unit (
                         dcache_req      <= 1'b1;
                         dcache_wr       <= 1'b1;
                         dcache_mem_type <= lsq_mem_type[next_store_idx];
-                    end else if (next_load_found) begin
+                    end else if (next_load_found && !flush) begin
                         lsq_state       <= LSQ_LOAD_REQ;
                         active_idx      <= next_load_idx;
                         dcache_addr     <= lsq_addr[next_load_idx];
@@ -309,14 +327,14 @@ module load_store_unit (
                     if (dcache_ack) begin
                         dcache_req            <= 1'b0;
                         lsq_state             <= LSQ_IDLE;
-                        if (!active_squashed) begin
+                        if (!active_squashed && !flush) begin
                             // (If squashed, the flush already freed the slot and
                             // it may hold a new entry, so leave it alone.)
                             lsq_completed[active_idx] <= 1'b1;
                             lsq_valid[active_idx]     <= 1'b0;
                         end
 
-                        result_valid   <= !active_squashed;
+                        result_valid   <= !active_squashed && !flush;
                         active_squashed <= 1'b0;
                         result_phys_rd <= lsq_phys_rd[active_idx];
                         result_rob_idx <= lsq_rob_idx[active_idx];
@@ -335,16 +353,24 @@ module load_store_unit (
                         lsq_state                 <= LSQ_IDLE;
                         lsq_completed[active_idx] <= 1'b1;
                         lsq_valid[active_idx]     <= 1'b0;
+                        sq_head                   <= sq_head + 3'd1;
                     end
                 end
 
                 default: lsq_state <= LSQ_IDLE;
             endcase
 
-            case ({do_alloc, do_free})
+            case ({do_alloc && !flush, do_free})
                 2'b10: count <= count + 5'd1;
                 2'b01: count <= count - 5'd1;
                 default: count <= count;
+            endcase
+
+            case ({commit_store_en && uncomm_store_found && !flush,
+                   lsq_state == LSQ_STORE_WAIT && dcache_ack})
+                2'b10: sq_count <= sq_count + 4'd1;
+                2'b01: sq_count <= sq_count - 4'd1;
+                default: sq_count <= sq_count;
             endcase
         end
     end

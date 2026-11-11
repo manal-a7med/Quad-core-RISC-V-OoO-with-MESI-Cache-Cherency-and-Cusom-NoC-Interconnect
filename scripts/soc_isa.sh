@@ -5,7 +5,7 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 OUT=$ROOT/build/soc; mkdir -p "$OUT"
 SRC="$ROOT/rtl/core/*.v $ROOT/rtl/cache/l1_icache.v $ROOT/rtl/cache/l1_dcache.v $ROOT/rtl/cache/l2_cache.v \
      $ROOT/rtl/coherence/bus_arbiter.v $ROOT/rtl/coherence/coherence_bus.v $ROOT/rtl/coherence/snoop_controller.v \
-     $ROOT/rtl/memory/*.v $ROOT/rtl/top/quad_core_top.v"
+     $ROOT/rtl/memory/*.v $ROOT/rtl/io/*.v $ROOT/rtl/top/quad_core_top.v"
 iverilog -g2012 -DSIM -I "$ROOT/rtl/core" -I "$ROOT/rtl/cache" -I "$ROOT/verif" -o "$OUT/soc.vvp" $SRC "$ROOT/verif/soc/tb_soc.v" || exit 1
 pass=0; fail=0; : > "$OUT/summary.txt"
 for h in "$ROOT"/build/isa/*.hex; do

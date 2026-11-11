@@ -4,13 +4,19 @@
 // core starts at 0 and runs it. The run ends when core 0 stores to TOHOST
 // (0xFFF0): 1 = pass, (n << 1) | 1 = fail at test n. With +all, the run
 // waits until all four cores have written TOHOST and reports each.
+// A write to the EXIT register (0x8000_0008) also ends the run: 1 = pass.
+// UART output is printed as it is sent; +baud_clks=<n> sets the UART bit time
+// (default 4 cycles so that simulations stay short).
 `include "common_defs.vh"
 `include "mesi_defines.vh"
 module tb_soc;
   reg clk = 0, rst_n = 0;
   always #5 clk = ~clk;
   wire [3:0] core_active; wire mem_busy;
-  quad_core_top dut(.clk(clk), .rst_n(rst_n), .core_active(core_active), .mem_busy(mem_busy));
+  wire uart_txd; wire [15:0] leds; wire [31:0] hex_value, exit_value; wire exit_valid;
+  quad_core_top #(.UART_CLKS_PER_BIT(4)) dut(.clk(clk), .rst_n(rst_n), .core_active(core_active), .mem_busy(mem_busy),
+                    .uart_txd(uart_txd), .leds(leds), .hex_value(hex_value),
+                    .exit_value(exit_value), .exit_valid(exit_valid));
 
   reg [31:0] words [0:16383];
   reg [1023:0] hexfile;
@@ -46,6 +52,11 @@ module tb_soc;
     #22 rst_n = 1;
     forever begin
       @(posedge clk); cycles = cycles + 1;
+      if (exit_valid) begin
+        if (exit_value == 32'd1) $display("\nRESULT PASS cycles=%0d leds=%h hex=%h", cycles, leds, hex_value);
+        else                     $display("\nRESULT FAIL exit=%0d cycles=%0d", exit_value, cycles);
+        $finish;
+      end
       if ((!all && done_mask[0]) || done_mask == 15) begin
         if (fails == 0) $display("RESULT PASS cycles=%0d", cycles);
         else            $display("RESULT FAIL cycles=%0d", cycles);
