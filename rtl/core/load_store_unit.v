@@ -40,6 +40,8 @@ module load_store_unit (
     // Status and control
     output wire        lsq_full,
     input  wire        commit_store_en,
+    input  wire [3:0]  commit_rob_idx,   // ROB index of the committing store
+    input  wire [3:0]  rob_head,         // program-order age reference
     input  wire        flush
 );
 
@@ -88,22 +90,85 @@ module load_store_unit (
 
     reg [2:0]  lsq_state;
     reg [3:0]  active_idx;
+    reg        active_squashed;  // in-flight load was flushed: drop its result
 
     // ========================================================================
-    // Store-to-load forwarding check
+    // Byte-accurate, age-aware store-to-load forwarding
     // ========================================================================
+    // Only stores OLDER than the load (committed, or earlier in ROB order)
+    // are considered. A load forwards only when exactly one older store
+    // overlaps it and that store covers every byte the load reads; any other
+    // overlap makes the load wait in the LSQ until the store reaches the cache.
+
+    function [3:0] byte_mask(input [2:0] mt, input [1:0] off);
+        case (mt)
+            `MEM_BYTE, `MEM_BYTE_U: byte_mask = 4'b0001 << off;
+            `MEM_HALF, `MEM_HALF_U: byte_mask = 4'b0011 << {off[1], 1'b0};
+            default:                byte_mask = 4'b1111;
+        endcase
+    endfunction
+
+    function [31:0] extend(input [2:0] mt, input [31:0] d);
+        case (mt)
+            `MEM_BYTE:   extend = {{24{d[7]}},  d[7:0]};
+            `MEM_HALF:   extend = {{16{d[15]}}, d[15:0]};
+            `MEM_BYTE_U: extend = {24'd0, d[7:0]};
+            `MEM_HALF_U: extend = {16'd0, d[15:0]};
+            default:     extend = d;
+        endcase
+    endfunction
+
+    function [3:0] rel_age(input [3:0] idx);
+        rel_age = idx - rob_head;
+    endfunction
+
+    // Is store slot j older than a load with ROB index lrob?
+    function store_older(input integer j, input [3:0] lrob);
+        store_older = lsq_committed[j] || (rel_age(lsq_rob_idx[j]) < rel_age(lrob));
+    endfunction
+
     reg        fwd_found;
     reg [31:0] fwd_data;
+    reg [2:0]  fwd_hits;
+    reg [31:0] fwd_lane;
     integer    fwd_i;
+    wire [3:0] ld_mask = byte_mask(mem_type, addr[1:0]);
 
     always @(*) begin
         fwd_found = 1'b0;
         fwd_data  = 32'd0;
+        fwd_hits  = 3'd0;
+        fwd_lane  = 32'd0;
         for (fwd_i = 0; fwd_i < DEPTH; fwd_i = fwd_i + 1) begin
-            if (lsq_valid[fwd_i] && lsq_is_store[fwd_i] &&
-                lsq_addr[fwd_i][31:2] == addr[31:2] && enqueue_en && is_load) begin
-                fwd_found = 1'b1;
-                fwd_data  = lsq_data[fwd_i];
+            if (enqueue_en && is_load && lsq_valid[fwd_i] && lsq_is_store[fwd_i] &&
+                !lsq_completed[fwd_i] && store_older(fwd_i, rob_idx) &&
+                lsq_addr[fwd_i][31:2] == addr[31:2] &&
+                |(byte_mask(lsq_mem_type[fwd_i], lsq_addr[fwd_i][1:0]) & ld_mask)) begin
+                fwd_hits = fwd_hits + 3'd1;
+                if ((byte_mask(lsq_mem_type[fwd_i], lsq_addr[fwd_i][1:0]) & ld_mask) == ld_mask) begin
+                    fwd_found = 1'b1;
+                    fwd_lane  = lsq_data[fwd_i] << {lsq_addr[fwd_i][1:0], 3'b000};
+                end
+            end
+        end
+        if (fwd_hits != 3'd1) fwd_found = 1'b0;
+        fwd_data = extend(mem_type, fwd_lane >> {addr[1:0], 3'b000});
+    end
+
+    // A queued load is blocked while any older overlapping store is still
+    // waiting to be written to the cache.
+    reg        ld_blocked [0:DEPTH-1];
+    integer    bi, bj;
+    always @(*) begin
+        for (bi = 0; bi < DEPTH; bi = bi + 1) begin
+            ld_blocked[bi] = 1'b0;
+            for (bj = 0; bj < DEPTH; bj = bj + 1) begin
+                if (lsq_valid[bj] && lsq_is_store[bj] && !lsq_completed[bj] &&
+                    store_older(bj, lsq_rob_idx[bi]) &&
+                    lsq_addr[bj][31:2] == lsq_addr[bi][31:2] &&
+                    |(byte_mask(lsq_mem_type[bj], lsq_addr[bj][1:0]) &
+                      byte_mask(lsq_mem_type[bi], lsq_addr[bi][1:0])))
+                    ld_blocked[bi] = 1'b1;
             end
         end
     end
@@ -127,7 +192,7 @@ module load_store_unit (
         uncomm_store_found = 1'b0;
         uncomm_store_idx   = 4'd0;
         for (nl_i = 0; nl_i < DEPTH; nl_i = nl_i + 1) begin
-            if (lsq_valid[nl_i] && lsq_is_load[nl_i] && !lsq_completed[nl_i] && !next_load_found) begin
+            if (lsq_valid[nl_i] && lsq_is_load[nl_i] && !lsq_completed[nl_i] && !ld_blocked[nl_i] && !next_load_found) begin
                 next_load_idx   = nl_i[3:0];
                 next_load_found = 1'b1;
             end
@@ -135,7 +200,8 @@ module load_store_unit (
                 next_store_idx   = nl_i[3:0];
                 next_store_found = 1'b1;
             end
-            if (lsq_valid[nl_i] && lsq_is_store[nl_i] && !lsq_committed[nl_i] && !uncomm_store_found) begin
+            if (lsq_valid[nl_i] && lsq_is_store[nl_i] && !lsq_committed[nl_i] &&
+                lsq_rob_idx[nl_i] == commit_rob_idx && !uncomm_store_found) begin
                 uncomm_store_idx   = nl_i[3:0];
                 uncomm_store_found = 1'b1;
             end
@@ -156,6 +222,7 @@ module load_store_unit (
             dcache_req   <= 1'b0;
             dcache_wr    <= 1'b0;
             result_valid <= 1'b0;
+            active_squashed <= 1'b0;
             for (k = 0; k < DEPTH; k = k + 1) begin
                 lsq_valid[k]     <= 1'b0;
                 lsq_completed[k] <= 1'b0;
@@ -163,6 +230,11 @@ module load_store_unit (
             end
         end else if (flush) begin
             result_valid <= 1'b0;
+            // A load already sent to the cache must finish its handshake, but
+            // its result belongs to a squashed instruction and must not reach
+            // the CDB (its physical register may already be reallocated).
+            if (lsq_state == LSQ_LOAD_REQ || lsq_state == LSQ_LOAD_WAIT)
+                active_squashed <= 1'b1;
             for (k = 0; k < DEPTH; k = k + 1) begin
                 if (!lsq_committed[k]) begin
                     lsq_valid[k]     <= 1'b0;
@@ -235,21 +307,19 @@ module load_store_unit (
                     if (dcache_ack) begin
                         dcache_req            <= 1'b0;
                         lsq_state             <= LSQ_IDLE;
-                        lsq_completed[active_idx] <= 1'b1;
-                        lsq_valid[active_idx]     <= 1'b0;
+                        if (!active_squashed) begin
+                            // (If squashed, the flush already freed the slot and
+                            // it may hold a new entry, so leave it alone.)
+                            lsq_completed[active_idx] <= 1'b1;
+                            lsq_valid[active_idx]     <= 1'b0;
+                        end
 
-                        result_valid   <= 1'b1;
+                        result_valid   <= !active_squashed;
+                        active_squashed <= 1'b0;
                         result_phys_rd <= lsq_phys_rd[active_idx];
                         result_rob_idx <= lsq_rob_idx[active_idx];
 
-                        case (lsq_mem_type[active_idx])
-                            `MEM_BYTE:   result_data <= {{24{dcache_rdata[7]}}, dcache_rdata[7:0]};
-                            `MEM_HALF:   result_data <= {{16{dcache_rdata[15]}}, dcache_rdata[15:0]};
-                            `MEM_WORD:   result_data <= dcache_rdata;
-                            `MEM_BYTE_U: result_data <= {24'd0, dcache_rdata[7:0]};
-                            `MEM_HALF_U: result_data <= {16'd0, dcache_rdata[15:0]};
-                            default:     result_data <= dcache_rdata;
-                        endcase
+                        result_data <= extend(lsq_mem_type[active_idx], dcache_rdata);
                     end
                 end
 

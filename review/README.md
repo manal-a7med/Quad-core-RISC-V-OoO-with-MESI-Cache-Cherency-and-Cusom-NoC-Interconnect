@@ -11,4 +11,8 @@ Run from the repo root:
     iverilog -g2012 -DSIM -I rtl/core -o r.vvp rtl/core/*.v review/tb_repro.v
     vvp r.vvp
 
-When the core fixes land, every line should print PASS.
+Or simply `make sim-repro`.
+
+Status: on the imported RTL 5 of 8 checks fail (6 before the testbench stopped
+the program wrapping round at 0x100). With the P1 fixes on branch
+`p0-p1-fixes`, all 8 pass.
