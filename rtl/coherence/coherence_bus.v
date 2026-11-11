@@ -73,49 +73,25 @@ module coherence_bus (
 
     assign sc_snoop_resp       = snoop_resp;
     assign sc_snoop_data_valid = snoop_data_valid;
-    assign sc_snoop_data       = (snoop_data_valid[0] && resp0 == `SNOOP_HITM) ? snoop_data_flat[255:0]    :
-                                 (snoop_data_valid[1] && resp1 == `SNOOP_HITM) ? snoop_data_flat[511:256]  :
-                                 (snoop_data_valid[2] && resp2 == `SNOOP_HITM) ? snoop_data_flat[767:512]  :
-                                 (snoop_data_valid[3] && resp3 == `SNOOP_HITM) ? snoop_data_flat[1023:768] :
-                                 snoop_data_valid[0]                           ? snoop_data_flat[255:0]    :
-                                 snoop_data_valid[1]                           ? snoop_data_flat[511:256]  :
-                                 snoop_data_valid[2]                           ? snoop_data_flat[767:512]  :
-                                 snoop_data_valid[3]                           ? snoop_data_flat[1023:768] :
-                                                                                 256'd0;
+    // Data from the snooped cache that answered HITM (at most one cache holds
+    // a line Modified). AND-OR select: cheaper than a priority mux at 256 bits.
+    wire [3:0] hitm_sel = snoop_data_valid & {resp3 == `SNOOP_HITM, resp2 == `SNOOP_HITM,
+                                              resp1 == `SNOOP_HITM, resp0 == `SNOOP_HITM};
+    assign sc_snoop_data = ({256{hitm_sel[0]}} & snoop_data_flat[255:0])   |
+                           ({256{hitm_sel[1]}} & snoop_data_flat[511:256]) |
+                           ({256{hitm_sel[2]}} & snoop_data_flat[767:512]) |
+                           ({256{hitm_sel[3]}} & snoop_data_flat[1023:768]);
     
     // Mux core requests based on arb_grant
+    // Granted core's request. The grant is one-hot, so encode it once and
+    // use plain 4:1 muxes (one LUT per bit) for the 256-bit write data.
+    wire [1:0] gnt_id = arb_grant[1] ? 2'd1 : arb_grant[2] ? 2'd2 : arb_grant[3] ? 2'd3 : 2'd0;
     always @(*) begin
-        sc_req_valid   = 1'b0;
-        sc_req_cmd     = 3'b000;
-        sc_req_addr    = 32'b0;
-        sc_req_wdata   = 256'b0;
-        sc_req_core_id = 2'b00;
-        
-        if (arb_grant[0]) begin
-            sc_req_valid   = core_bus_req[0];
-            sc_req_cmd     = core_bus_cmd[2:0];
-            sc_req_addr    = core_bus_addr[31:0];
-            sc_req_wdata   = core_bus_wdata[255:0];
-            sc_req_core_id = 2'd0;
-        end else if (arb_grant[1]) begin
-            sc_req_valid   = core_bus_req[1];
-            sc_req_cmd     = core_bus_cmd[5:3];
-            sc_req_addr    = core_bus_addr[63:32];
-            sc_req_wdata   = core_bus_wdata[511:256];
-            sc_req_core_id = 2'd1;
-        end else if (arb_grant[2]) begin
-            sc_req_valid   = core_bus_req[2];
-            sc_req_cmd     = core_bus_cmd[8:6];
-            sc_req_addr    = core_bus_addr[95:64];
-            sc_req_wdata   = core_bus_wdata[767:512];
-            sc_req_core_id = 2'd2;
-        end else if (arb_grant[3]) begin
-            sc_req_valid   = core_bus_req[3];
-            sc_req_cmd     = core_bus_cmd[11:9];
-            sc_req_addr    = core_bus_addr[127:96];
-            sc_req_wdata   = core_bus_wdata[1023:768];
-            sc_req_core_id = 2'd3;
-        end
+        sc_req_valid   = |(arb_grant & core_bus_req);
+        sc_req_cmd     = core_bus_cmd[gnt_id*3 +: 3];
+        sc_req_addr    = core_bus_addr[gnt_id*32 +: 32];
+        sc_req_wdata   = core_bus_wdata[gnt_id*256 +: 256];
+        sc_req_core_id = gnt_id;
     end
 
 `ifdef BUS_DEBUG   // +define+BUS_DEBUG for a transaction log

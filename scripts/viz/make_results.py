@@ -87,6 +87,74 @@ def synth_x7():
     return dict(LUT=cnt(r"LUT\d"), FF=cnt(r"FD\w+"), CARRY=cnt("CARRY4"), MUXF=cnt(r"MUXF\d"))
 
 
+# Full-SoC Artix-7 estimate: LUT RAM primitives counted in LUTs
+LUTRAM_LUTS = {"RAM64M": 4, "RAM32M": 4, "RAM128X1D": 4, "RAM64X1D": 2, "RAM32X1D": 2,
+               "RAM256X1S": 4, "RAM128X1S": 2, "RAM64X1S": 1, "RAM32X1S": 1, "SRL16E": 1, "SRLC32E": 1}
+CORE_MODS = {"riscv_ooo_core", "alu", "branch_unit", "csr_file", "decode_unit", "fetch_unit",
+             "issue_queue", "load_store_unit", "register_file", "rename_unit", "reorder_buffer"}
+# First full-SoC measurement, before the P2 area work (commit 2b7097a)
+AREA_FIRST = 88491
+
+
+def cell_luts(blk):
+    c = {}
+    for name, n in re.findall(r"^\s+([A-Z][A-Z0-9_]+)\s+(\d+)\s*$", blk, re.M):
+        c[name] = c.get(name, 0) + int(n)
+    lut = sum(v for k, v in c.items() if re.fullmatch(r"LUT[1-6]", k))
+    lut += sum(c.get(k, 0) * w for k, w in LUTRAM_LUTS.items())
+    ff = sum(v for k, v in c.items() if re.fullmatch(r"FD[CPRS]E?", k))
+    bram = c.get("RAMB36E1", 0) + c.get("RAMB18E1", 0) / 2
+    return lut, ff, bram
+
+
+def soc_area():
+    s = read("soc/synth_fpga.log")
+    k = s.rfind("Printing statistics")
+    h = s.rfind("=== design hierarchy ===")
+    if k < 0 or h < 0:
+        return None
+    total = cell_luts(s[h:])
+    groups = {}
+    for m in re.finditer(r"^=== (\S+) ===$(.*?)(?=^=== )", s[k:h] + "=== end ===", re.M | re.S):
+        mod = re.sub(r"^\$paramod.?\\?|\\.*$", "", m[1]).split("\\")[0]
+        lut, ff, bram = cell_luts(m[2])
+        if mod in CORE_MODS:   g, n = "4 cores", 4
+        elif mod == "l1_dcache": g, n = "4 L1 data caches", 4
+        elif mod == "l1_icache": g, n = "4 L1 instruction caches", 4
+        elif mod == "l2_cache":  g, n = "Shared L2", 1
+        elif mod in ("coherence_bus", "snoop_controller", "bus_arbiter"): g, n = "MESI bus and snoop control", 1
+        elif mod in ("main_memory", "memory_controller"): g, n = "Main memory", 1
+        else: g, n = "I/O, clocking, top level", 1
+        a = groups.setdefault(g, [0, 0, 0])
+        a[0] += n * lut; a[1] += n * ff; a[2] += n * bram
+    return dict(LUT=total[0], FF=total[1], BRAM=total[2], groups=groups)
+
+
+def soc_logs():
+    out = {}
+    for p in ("hello", "parsum"):
+        t = read(f"soc/{p}.fpga.log") or read(f"soc/{p}.log")
+        uart = []
+        for l in t.splitlines():
+            if l.startswith(("RESULT", "7-segment", "VCD", "WARNING", "vvp", "verif/", "check_uart")) or not l.strip():
+                continue
+            uart.append(l.replace("\r", ""))
+        seg = re.search(r"7-segment display: ([0-9a-f]{8}).*LEDs: ([01]+)", t)
+        res = re.search(r"RESULT (\w+) cycles=(\d+)", t)
+        out[p] = dict(uart=uart, seg=seg[1] if seg else None, leds=seg[2] if seg else None,
+                      ok=bool(res and res[1] == "PASS"), cycles=int(res[2]) if res else None)
+    return out
+
+
+def soc_isa():
+    d = {}
+    for l in read("soc/isa_summary.txt").splitlines():
+        m = re.match(r"(\S+) RESULT (\w+)", l)
+        if m:
+            d[m[1]] = m[2]
+    return d
+
+
 def yosys_ok(v):
     t = read(f"{v}/yosys_check.txt")
     err = re.search(r"ERROR: (.*)", t)
@@ -99,6 +167,7 @@ ref_b, ref_a = read("before/ref").strip(), read("after/ref").strip()
 yb, yb_err = yosys_ok("before")
 ya, _ = yosys_ok("after")
 x7 = synth_x7()
+area, demos, sisa = soc_area(), soc_logs(), soc_isa()
 dis_demo, dis_prog = disasm("demo.dis"), disasm("prog.dis")
 demo, demo_fl = trace("after/demo.log")
 rp_b, rp_b_fl = trace("before/repro.log")
@@ -208,12 +277,46 @@ if x7:
 else:
     synth_rows, lut_pct = "", "n/a"
 
+def seg7(hexstr):
+    return "".join(f'<span class="dig">{c}</span>' for c in (hexstr or "--------").upper())
+
+
+def led_row(bits):
+    bits = (bits or "0" * 16)[-16:]
+    return "".join(f'<i class="led{" on" if b == "1" else ""}"></i>' for b in bits)
+
+
+def demo_card(name, title, d):
+    lines = "\n".join(esc(l) for l in d["uart"]) or "(not run)"
+    return f'''<div class="demo"><div class="demo-h"><b>{title}</b>{pill(d["ok"])}
+      <span class="muted">{f"{d['cycles']:,} cycles" if d["cycles"] else ""}</span></div>
+      <pre class="term">{lines}</pre>
+      <div class="board"><div class="seg">{seg7(d["seg"])}</div><div class="leds">{led_row(d["leds"])}</div></div></div>'''
+
+
+if area:
+    gmax = max(v[0] for v in area["groups"].values()) or 1
+    order = sorted(area["groups"].items(), key=lambda kv: -kv[1][0])
+    area_bars = "".join(
+        f'<div class="bar"><span class="bl">{esc(g)}</span><span class="bt"><i style="width:{100*v[0]/gmax:.1f}%"></i></span>'
+        f'<span class="bn">{v[0]:,.0f}</span></div>' for g, v in order)
+    area_rows = "".join(
+        f'<tr><td>{n}</td><td class="num">{u:,.1f}</td><td class="num">{c:,}</td><td class="num">{100*u/c:.0f}%</td></tr>'
+        .replace(".0<", "<") for n, u, c in (("LUTs (incl. LUT RAM)", area["LUT"], CAP["LUT"]),
+                                              ("Flip-flops", area["FF"], CAP["FF"]),
+                                              ("Block RAM (36 Kb)", area["BRAM"], CAP["BRAM36"])))
+    soc_lut_pct = f'{100*area["LUT"]/CAP["LUT"]:.0f}%'
+else:
+    area_bars, area_rows, soc_lut_pct = "", "", "n/a"
+sisa_chips = "".join(
+    f'<span class="chip {"ok" if v == "PASS" else "bad"}" title="{t}: {v}">{t}</span>' for t, v in sorted(sisa.items()))
+
 early_n = len(ooo_issues(demo))
 ipc = (sum(1 for i in demo if i["R"] is not None) / cyc_demo) if cyc_demo else 0
 
 stamp = datetime.date.today().isoformat()
 
-page = f"""<title>Core Fix Results</title>
+page = f"""<title>Project Results</title>
 <meta name="claude:viewport-fit-sides" content="cover">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans:wght@400;500;600&family=Space+Grotesk:wght@500;700&display=swap">
@@ -294,13 +397,27 @@ ol.stream .pc {{ color: var(--muted); min-width: 3.5em; }}
 .tag.bad {{ margin-left: auto; font-size: .7rem; font-weight: 600; }}
 footer {{ font-size: .82rem; color: var(--muted); display: grid; gap: 6px; }}
 code {{ font-family: var(--f-mono); font-size: .88em; }}
+.demo {{ background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 14px; display: grid; gap: 10px; min-width: 0; }}
+.demo-h {{ display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }}
+.term {{ margin: 0; background: #0b0f14; color: #b9f6c5; font: .8rem/1.5 var(--f-mono); padding: 10px 12px; border-radius: 6px; overflow-x: auto; white-space: pre; }}
+.board {{ display: flex; gap: 14px; align-items: center; flex-wrap: wrap; }}
+.seg {{ background: #120707; padding: 6px 10px; border-radius: 5px; display: inline-flex; gap: 3px; }}
+.dig {{ font: 600 1.15rem var(--f-mono); color: #ff4b3a; text-shadow: 0 0 6px rgba(255,75,58,.6); width: .8em; text-align: center; }}
+.leds {{ display: inline-flex; gap: 3px; }}
+.led {{ width: 9px; height: 9px; border-radius: 50%; background: var(--line); display: inline-block; }}
+.led.on {{ background: #33d17a; box-shadow: 0 0 5px #33d17a; }}
+.bar {{ display: grid; grid-template-columns: minmax(0, 11rem) 1fr auto; gap: 8px; align-items: center; font-size: .85rem; margin: 6px 0; }}
+.bar .bt {{ background: var(--line); border-radius: 3px; height: 10px; overflow: hidden; }}
+.bar .bt i {{ display: block; height: 100%; background: var(--accent); }}
+.bar .bn {{ font-family: var(--f-mono); font-variant-numeric: tabular-nums; }}
 </style>
 <div class="wrap">
 <header>
-  <span class="eyebrow">Quad-core RISC-V OoO · Phases P0 and P1</span>
-  <h1>Core correctness and build results</h1>
+  <span class="eyebrow">Quad-core RISC-V OoO with MESI · Phases P0 to P2</span>
+  <h1>Correctness, multicore and FPGA results</h1>
   <p class="muted">Every number on this page comes from a simulation, test or synthesis run on the
-  RTL. The baseline is the imported design; "fixed" is the same core after the P0 and P1 changes.</p>
+  RTL. The baseline is the imported design; "fixed" is the core after the P0 and P1 changes. The
+  multicore and FPGA sections run the whole four-core SoC.</p>
   <div class="refs">baseline {esc(ref_b)} · fixed {esc(ref_a)} · generated {stamp}</div>
 </header>
 
@@ -312,8 +429,10 @@ code {{ font-family: var(--f-mono); font-size: .88em; }}
       <span class="v"><span class="from">{npass(ib)}/{len(ib)}</span><span class="arrow">→</span>{npass(ia)}/{len(ia)}</span></div>
     <div class="stat"><span class="k">Core passes Yosys synthesis</span>
       <span class="v"><span class="from">{"yes" if yb else "no"}</span><span class="arrow">→</span>{"yes" if ya else "no"}</span></div>
-    <div class="stat"><span class="k">4 cores, LUTs of XC7A100T</span>
-      <span class="v">{lut_pct}</span></div>
+    <div class="stat"><span class="k">ISA programs on the 4-core SoC</span>
+      <span class="v">{npass(sisa)}/{len(sisa)}</span></div>
+    <div class="stat"><span class="k">Whole SoC, LUTs of XC7A100T</span>
+      <span class="v">{soc_lut_pct}</span></div>
   </div>
 </section>
 
@@ -364,14 +483,37 @@ code {{ font-family: var(--f-mono); font-size: .88em; }}
 </section>
 
 <section>
-  <h2>Synthesis</h2>
-  <p>The baseline core stops in Yosys with <code>{esc(yb_err or "an error")}</code>, caused by a flush
-  signal inside an asynchronous-reset block. With that fixed, one core maps to Artix-7 as below
-  (Yosys <code>synth_xilinx</code>, before place and route). Caches and memory are not included yet;
-  mapping them to block RAM is P2.</p>
-  <div class="scroll"><table>
-    <thead><tr><th>Resource</th><th class="num">1 core</th><th class="num">4 cores</th><th class="num">XC7A100T</th><th class="num">Used</th></tr></thead>
-    <tbody>{synth_rows}</tbody></table></div>
+  <h2>Four cores running C programs</h2>
+  <p>Bare-metal C on the full SoC: four out-of-order cores, private L1 caches, MESI snooping bus,
+  shared L2 and main memory. Each program runs on the board-level model of the FPGA
+  (<code>fpga_top</code>, <code>make fpga-sim</code>): the text is decoded from the UART pin as a PC
+  terminal would see it, and the display and LEDs are read back from the board pins.
+  In <b>hello</b> the harts take turns through a shared variable, so each line also shows a store
+  by one core reaching the others through the coherence protocol. In <b>parsum</b> each hart sums a
+  quarter of a shared array; hart 0 collects the partial sums.</p>
+  <div class="cols">{demo_card("hello", "hello", demos["hello"])}{demo_card("parsum", "parsum", demos["parsum"])}</div>
+</section>
+
+<section>
+  <h2>ISA tests on the full SoC</h2>
+  <p>The rv32ui tests, the system test (CSRs, traps) and a 24 KB memory stress test, run through
+  the caches and the coherence bus on the four-core SoC.</p>
+  <div class="chips">{sisa_chips}</div>
+</section>
+
+<section>
+  <h2>Fitting the Nexys A7-100T</h2>
+  <p>The whole design (<code>fpga_top</code>: four cores, caches, bus, 64 KB memory, I/O) mapped to
+  Artix-7 by Yosys <code>synth_xilinx</code>, before place and route. Yosys usually reports more
+  LUTs than Vivado. The first full-SoC estimate was {AREA_FIRST:,} LUTs
+  ({100*AREA_FIRST/CAP["LUT"]:.0f}% of the device); moving the cache data, tags and state into block
+  and LUT RAM and simplifying the bus brought it to the figure below.</p>
+  <div class="cols">
+    <div class="scroll"><table>
+      <thead><tr><th>Resource</th><th class="num">Used</th><th class="num">XC7A100T</th><th class="num">Used</th></tr></thead>
+      <tbody>{area_rows}</tbody></table></div>
+    <div><span class="lbl">LUTs by block</span>{area_bars}</div>
+  </div>
 </section>
 
 <footer>
