@@ -24,6 +24,7 @@ module reorder_buffer (
     input  wire        alloc_is_store,
     input  wire        alloc_is_load,
     output wire [3:0]  alloc_idx,      // ROB index assigned
+    output wire [3:0]  head_idx,       // oldest in-flight entry (age reference)
     output wire        rob_full,
 
     // Complete interface (from execute stage)
@@ -76,6 +77,7 @@ module reorder_buffer (
 
     assign rob_full  = (count >= `ROB_DEPTH);
     assign alloc_idx = tail;
+    assign head_idx  = head;
 
     wire rob_empty = (count == 0);
 
@@ -87,7 +89,20 @@ module reorder_buffer (
     wire do_commit = !rob_empty && rob_valid[head] && rob_done[head];
 
     always @(posedge clk or negedge rst_n) begin
-        if (!rst_n || flush_in) begin
+        if (!rst_n) begin
+            head  <= 4'd0;
+            tail  <= 4'd0;
+            count <= 5'd0;
+            commit_valid    <= 1'b0;
+            flush_out       <= 1'b0;
+            flush_redirect_pc <= 32'd0;
+            for (k = 0; k < `ROB_DEPTH; k = k + 1) begin
+                rob_valid[k]        <= 1'b0;
+                rob_done[k]         <= 1'b0;
+                rob_mispredicted[k] <= 1'b0;
+                rob_exception[k]    <= 1'b0;
+            end
+        end else if (flush_in) begin
             head  <= 4'd0;
             tail  <= 4'd0;
             count <= 5'd0;

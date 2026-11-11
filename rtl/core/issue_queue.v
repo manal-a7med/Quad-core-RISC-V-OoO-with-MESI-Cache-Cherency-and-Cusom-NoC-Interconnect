@@ -66,6 +66,7 @@ module issue_queue (
     // Status
     output wire        iq_full,
     input  wire        issue_stall,
+    input  wire [3:0]  rob_head,     // ROB head: program-order age reference
     input  wire        flush
 );
 
@@ -128,24 +129,36 @@ module issue_queue (
     reg       older_store_pending;
     integer   ii, si;
 
+    // Program-order age = distance from the ROB head (0 = oldest in flight).
+    // This replaces a saturating per-entry counter, which stopped ordering
+    // entries once two of them had both waited 15+ cycles.
+    function [3:0] rel_age(input [3:0] rob_idx);
+        rel_age = rob_idx - rob_head;
+    endfunction
+
     always @(*) begin
         issue_slot  = 3'd0;
         issue_found = 1'b0;
         oldest_age  = 4'd0;
+        older_store_pending = 1'b0;
+        ii = 0; si = 0;
         if (!issue_stall) begin
             for (ii = 0; ii < `IQ_DEPTH; ii = ii + 1) begin
+                // A load may not issue while an older store is still in the IQ
+                // (its address is unknown, so the LSQ cannot disambiguate).
                 older_store_pending = 1'b0;
                 if (iq_is_load[ii]) begin
                     for (si = 0; si < `IQ_DEPTH; si = si + 1) begin
-                        if (iq_valid[si] && iq_is_store[si] && (iq_age[si] > iq_age[ii]))
+                        if (iq_valid[si] && iq_is_store[si] &&
+                            (rel_age(iq_rob_idx[si]) < rel_age(iq_rob_idx[ii])))
                             older_store_pending = 1'b1;
                     end
                 end
                 if (iq_valid[ii] && iq_rs1_ready[ii] && iq_rs2_ready[ii] && !older_store_pending) begin
-                    if (!issue_found || iq_age[ii] > oldest_age) begin
+                    if (!issue_found || rel_age(iq_rob_idx[ii]) < oldest_age) begin
                         issue_slot  = ii[2:0];
                         issue_found = 1'b1;
-                        oldest_age  = iq_age[ii];
+                        oldest_age  = rel_age(iq_rob_idx[ii]);
                     end
                 end
             end
@@ -159,7 +172,16 @@ module issue_queue (
     wire do_dispatch = dispatch_en && free_found && !iq_full;
 
     always @(posedge clk or negedge rst_n) begin
-        if (!rst_n || flush) begin
+        if (!rst_n) begin
+            valid_count <= 4'd0;
+            issue_valid <= 1'b0;
+            for (k = 0; k < `IQ_DEPTH; k = k + 1) begin
+                iq_valid[k]     <= 1'b0;
+                iq_rs1_ready[k] <= 1'b0;
+                iq_rs2_ready[k] <= 1'b0;
+                iq_age[k]       <= 4'd0;
+            end
+        end else if (flush) begin
             valid_count <= 4'd0;
             issue_valid <= 1'b0;
             for (k = 0; k < `IQ_DEPTH; k = k + 1) begin

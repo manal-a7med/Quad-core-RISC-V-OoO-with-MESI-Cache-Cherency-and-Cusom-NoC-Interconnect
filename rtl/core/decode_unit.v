@@ -96,12 +96,16 @@ module decode_unit (
             end
             7'b0010111: begin // AUIPC
                 writes_rd = (rd != 5'd0);
-                fu_type = `FU_ALU; alu_op = `ALU_ADD;
+                // rd = pc + (U-imm). The sum is formed here, so the ALU must pass
+                // operand B through; ALU_ADD would add a stale rs1 value.
+                fu_type = `FU_ALU; alu_op = `ALU_PASS_B;
                 imm = pc + {instr[31:12], 12'd0};
             end
             7'b1101111: begin // JAL
                 writes_rd = (rd != 5'd0); is_jump = 1'b1;
-                fu_type = `FU_BRANCH;
+                // alu_op distinguishes JAL from JALR downstream (is_jalr is
+                // is_jump && alu_op == ALU_ADD), so JAL must not use ALU_ADD.
+                fu_type = `FU_BRANCH; alu_op = `ALU_PASS_B;
                 imm = {{12{instr[31]}}, instr[19:12], instr[20], instr[30:21], 1'b0};
             end
             7'b1100111: begin // JALR

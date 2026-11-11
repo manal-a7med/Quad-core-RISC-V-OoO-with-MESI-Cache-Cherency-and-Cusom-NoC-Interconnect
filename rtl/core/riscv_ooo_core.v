@@ -102,6 +102,12 @@ module riscv_ooo_core (
     wire [5:0]  lsu_result_phys_rd;
     wire [3:0]  lsu_result_rob_idx;
     wire        lsu_full;
+    wire [3:0]  rob_head_raw;
+    // Age reference for IQ/LSQ ordering. commit_valid/commit_rob_idx are
+    // registered, so for one cycle after a commit the ROB head has already
+    // moved past an entry the LSQ has not yet marked committed. Using the
+    // just-committed index keeps that entry the oldest during that cycle.
+    wire [3:0]  rob_head = rob_commit_valid ? rob_commit_idx : rob_head_raw;
 
     // --- CDB (Common Data Bus) ---
     wire        cdb_valid;
@@ -119,7 +125,9 @@ module riscv_ooo_core (
     // --- Track in-flight load to prevent CDB/ROB completion collision ---
     reg load_in_flight;
     always @(posedge clk or negedge rst_n) begin
-        if (!rst_n || pipeline_flush)
+        if (!rst_n)
+            load_in_flight <= 1'b0;
+        else if (pipeline_flush)
             load_in_flight <= 1'b0;
         else if (lsu_result_valid)
             load_in_flight <= 1'b0;
@@ -155,7 +163,9 @@ module riscv_ooo_core (
     reg [31:0] fd_pred_target;
 
     always @(posedge clk or negedge rst_n) begin
-        if (!rst_n || pipeline_flush) begin
+        if (!rst_n) begin
+            fd_valid <= 1'b0;
+        end else if (pipeline_flush) begin
             fd_valid <= 1'b0;
         end else if (!pipeline_stall) begin
             fd_valid       <= fetch_valid;
@@ -309,6 +319,7 @@ module riscv_ooo_core (
         .issue_mem_type         (iq_mem_type),
         .iq_full                (iq_full),
         .issue_stall            (iq_issue_stall),
+        .rob_head               (rob_head),
         .flush                  (pipeline_flush)
     );
 
@@ -353,6 +364,7 @@ module riscv_ooo_core (
         .alloc_is_store        (dec_is_store),
         .alloc_is_load         (dec_is_load),
         .alloc_idx             (rob_alloc_idx),
+        .head_idx              (rob_head_raw),
         .rob_full              (rob_full),
         .complete_en           (rob_complete_en),
         .complete_idx          (cdb_rob_idx),
@@ -398,6 +410,8 @@ module riscv_ooo_core (
         .result_rob_idx (lsu_result_rob_idx),
         .lsq_full       (lsu_full),
         .commit_store_en(rob_commit_valid && rob_commit_is_store),
+        .commit_rob_idx (rob_commit_idx),
+        .rob_head       (rob_head),
         .flush          (pipeline_flush)
     );
 
