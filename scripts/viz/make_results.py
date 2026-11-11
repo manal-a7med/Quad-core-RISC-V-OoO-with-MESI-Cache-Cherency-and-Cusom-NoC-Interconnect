@@ -32,12 +32,17 @@ def repro(v):
     return rows
 
 
-def isa(v):
-    res = {}
+def isa(v, suite="rv32ui"):
+    # run.sh prints each suite's results, then a "<suite>: N passed" line
+    res, cur = {}, {}
     for l in read(f"{v}/isa_summary.txt").splitlines():
         m = re.match(r"(\S+) RESULT (\w+)", l)
         if m:
-            res[m[1]] = m[2]
+            cur[m[1]] = m[2]
+        elif l.startswith(suite + ":"):
+            res = cur
+        elif re.match(r"\w+: \d+ passed", l):
+            cur = {}
     return res
 
 

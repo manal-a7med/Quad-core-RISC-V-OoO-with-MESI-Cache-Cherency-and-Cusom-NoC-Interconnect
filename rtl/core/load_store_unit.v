@@ -19,6 +19,7 @@ module load_store_unit (
     input  wire [31:0] addr,
     input  wire [31:0] store_data,
     input  wire [2:0]  mem_type,
+    input  wire [3:0]  amo_op,           // nonzero: atomic (enqueued as a load)
     input  wire [3:0]  rob_idx,
     input  wire [5:0]  phys_rd,
 
@@ -30,6 +31,7 @@ module load_store_unit (
     output reg         dcache_wr,
     input  wire        dcache_ack,
     output reg  [2:0]  dcache_mem_type,
+    output reg  [3:0]  dcache_amo,
 
     // Result broadcast (loads return data via CDB)
     output reg         result_valid,
@@ -60,6 +62,7 @@ module load_store_unit (
     reg [5:0]  lsq_phys_rd    [0:DEPTH-1];
     reg        lsq_completed  [0:DEPTH-1];
     reg        lsq_committed  [0:DEPTH-1]; // Stores: ready to write cache
+    reg [3:0]  lsq_amo        [0:DEPTH-1]; // Atomics: AMO code (always go to the cache)
 
     reg [4:0]  count;
     reg [3:0]  free_slot;
@@ -142,12 +145,17 @@ module load_store_unit (
         fwd_hits  = 3'd0;
         fwd_lane  = 32'd0;
         for (fwd_i = 0; fwd_i < DEPTH; fwd_i = fwd_i + 1) begin
-            if (enqueue_en && is_load && lsq_valid[fwd_i] && lsq_is_store[fwd_i] &&
-                !lsq_completed[fwd_i] && store_older(lsq_committed[fwd_i], lsq_rob_idx[fwd_i], rob_idx, rob_head) &&
+            // An older load of the same bytes still waiting in the LSQ also
+            // counts as a hit, so this load does not forward and stays behind
+            // it (it may read a newer value than the store holds).
+            if (enqueue_en && is_load && lsq_valid[fwd_i] && !lsq_completed[fwd_i] &&
+                (lsq_is_store[fwd_i] || lsq_is_load[fwd_i]) &&
+                store_older(lsq_committed[fwd_i], lsq_rob_idx[fwd_i], rob_idx, rob_head) &&
                 lsq_addr[fwd_i][31:2] == addr[31:2] &&
                 |(byte_mask(lsq_mem_type[fwd_i], lsq_addr[fwd_i][1:0]) & ld_mask)) begin
                 fwd_hits = fwd_hits + 3'd1;
-                if ((byte_mask(lsq_mem_type[fwd_i], lsq_addr[fwd_i][1:0]) & ld_mask) == ld_mask) begin
+                if (lsq_is_store[fwd_i] &&
+                    (byte_mask(lsq_mem_type[fwd_i], lsq_addr[fwd_i][1:0]) & ld_mask) == ld_mask) begin
                     fwd_found = 1'b1;
                     fwd_lane  = lsq_data[fwd_i] << {lsq_addr[fwd_i][1:0], 3'b000};
                 end
@@ -158,14 +166,16 @@ module load_store_unit (
     end
 
     // A queued load is blocked while any older overlapping store is still
-    // waiting to be written to the cache.
+    // waiting to be written to the cache, or while an older load of any of
+    // the same bytes has not been performed yet (loads of the same bytes are
+    // performed in program order: RVWMO, CoRR).
     reg        ld_blocked [0:DEPTH-1];
     integer    bi, bj;
     always @(*) begin
         for (bi = 0; bi < DEPTH; bi = bi + 1) begin
             ld_blocked[bi] = 1'b0;
             for (bj = 0; bj < DEPTH; bj = bj + 1) begin
-                if (lsq_valid[bj] && lsq_is_store[bj] && !lsq_completed[bj] &&
+                if (lsq_valid[bj] && (lsq_is_store[bj] || lsq_is_load[bj]) && !lsq_completed[bj] &&
                     store_older(lsq_committed[bj], lsq_rob_idx[bj], lsq_rob_idx[bi], rob_head) &&
                     lsq_addr[bj][31:2] == lsq_addr[bi][31:2] &&
                     |(byte_mask(lsq_mem_type[bj], lsq_addr[bj][1:0]) &
@@ -222,7 +232,9 @@ module load_store_unit (
     // Main Logic
     // ========================================================================
     integer k;
-    wire do_alloc = enqueue_en && !lsq_full && free_found && !(is_load && fwd_found);
+    // An atomic is never satisfied by forwarding: it must reach the cache
+    wire fwd_use  = is_load && fwd_found && (amo_op == `AMO_NONE);
+    wire do_alloc = enqueue_en && !lsq_full && free_found && !fwd_use;
     wire do_free  = ((lsq_state == LSQ_LOAD_WAIT) || (lsq_state == LSQ_STORE_WAIT)) && dcache_ack;
 
     always @(posedge clk or negedge rst_n) begin
@@ -231,6 +243,7 @@ module load_store_unit (
             lsq_state    <= LSQ_IDLE;
             dcache_req   <= 1'b0;
             dcache_wr    <= 1'b0;
+            dcache_amo   <= 4'd0;
             result_valid <= 1'b0;
             active_squashed <= 1'b0;
             sq_head      <= 3'd0;
@@ -261,7 +274,7 @@ module load_store_unit (
             // Enqueue new load/store
             // -----------------------------------------------------------------
             if (enqueue_en && !lsq_full) begin
-                if (is_load && fwd_found) begin
+                if (fwd_use) begin
                     // Forwarded load completes immediately without occupying slot
                     result_valid   <= 1'b1;
                     result_data    <= fwd_data;
@@ -274,6 +287,7 @@ module load_store_unit (
                     lsq_addr[free_slot]      <= addr;
                     lsq_data[free_slot]      <= store_data;
                     lsq_mem_type[free_slot]  <= mem_type;
+                    lsq_amo[free_slot]       <= amo_op;
                     lsq_rob_idx[free_slot]   <= rob_idx;
                     lsq_phys_rd[free_slot]   <= phys_rd;
                     lsq_completed[free_slot] <= 1'b0;
@@ -309,6 +323,7 @@ module load_store_unit (
                         dcache_req      <= 1'b1;
                         dcache_wr       <= 1'b1;
                         dcache_mem_type <= lsq_mem_type[next_store_idx];
+                        dcache_amo      <= `AMO_NONE;
                     end else if (next_load_found && !flush) begin
                         lsq_state       <= LSQ_LOAD_REQ;
                         active_idx      <= next_load_idx;
@@ -316,6 +331,8 @@ module load_store_unit (
                         dcache_req      <= 1'b1;
                         dcache_wr       <= 1'b0;
                         dcache_mem_type <= lsq_mem_type[next_load_idx];
+                        dcache_amo      <= lsq_amo[next_load_idx];
+                        dcache_wdata    <= lsq_data[next_load_idx];     // AMO operand
                     end
                 end
 

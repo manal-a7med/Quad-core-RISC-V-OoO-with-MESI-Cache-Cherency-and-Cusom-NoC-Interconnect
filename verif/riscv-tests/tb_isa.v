@@ -9,11 +9,15 @@ module tb_isa;
 
   wire [31:0] ia; reg [31:0] ir; wire ireq; reg iack;
   wire [31:0] da, dw; reg [31:0] dr; wire dreq, dwr; reg dack; wire [2:0] dmt;
+  wire [3:0] damo;
+  `include "common_defs.vh"
+  `include "amo.vh"
+  reg resv_valid = 0; reg [31:0] resv_addr = 0;   // LR/SC reservation (one hart)
 
   riscv_ooo_core dut(.clk(clk), .rst_n(rst_n), .core_id(2'b0),
     .icache_addr(ia), .icache_rdata(ir), .icache_req(ireq), .icache_ack(iack),
     .dcache_addr(da), .dcache_wdata(dw), .dcache_rdata(dr), .dcache_req(dreq),
-    .dcache_wr(dwr), .dcache_ack(dack), .dcache_mem_type(dmt));
+    .dcache_wr(dwr), .dcache_ack(dack), .dcache_mem_type(dmt), .dcache_amo(damo));
 
   reg [31:0] mem [0:16383];
   reg [1023:0] hexfile;
@@ -34,7 +38,15 @@ module tb_isa;
     dack <= 1'b0;
     if (rst_n && dreq && !dack) begin
       dack <= 1'b1;
-      if (dwr) begin
+      if (damo == `AMO_LR) begin
+        dr <= mem[da[15:2]]; resv_valid <= 1'b1; resv_addr <= da;
+      end else if (damo == `AMO_SC) begin
+        dr <= (resv_valid && resv_addr == da) ? 32'd0 : 32'd1;
+        if (resv_valid && resv_addr == da) mem[da[15:2]] <= dw;
+        resv_valid <= 1'b0;
+      end else if (damo != `AMO_NONE) begin
+        dr <= mem[da[15:2]]; mem[da[15:2]] <= amo_apply(damo, mem[da[15:2]], dw);
+      end else if (dwr) begin
         case (dmt)
           3'd0: mem[da[15:2]][da[1:0]*8 +: 8]  <= dw[7:0];
           3'd1: mem[da[15:2]][da[1]*16 +: 16]  <= dw[15:0];

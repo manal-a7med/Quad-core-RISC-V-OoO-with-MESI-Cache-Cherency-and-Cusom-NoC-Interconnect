@@ -27,7 +27,8 @@ module riscv_ooo_core (
     output wire        dcache_req,
     output wire        dcache_wr,
     input  wire        dcache_ack,
-    output wire [2:0]  dcache_mem_type
+    output wire [2:0]  dcache_mem_type,
+    output wire [3:0]  dcache_amo        // `AMO_* code of an atomic access, else 0
 );
 
     // ========================================================================
@@ -56,6 +57,8 @@ module riscv_ooo_core (
     wire        dec_illegal, dec_valid;
     wire        dec_writes_rd_raw;
     wire        dec_is_csr, dec_csr_uimm, dec_is_ecall, dec_is_ebreak, dec_is_mret;
+    wire        dec_is_amo, dec_is_fence;
+    wire [3:0]  dec_amo_op;
     wire [1:0]  dec_csr_op;
 
     // --- Rename outputs ---
@@ -137,10 +140,16 @@ module riscv_ooo_core (
     wire        csr_bad    = dec_is_csr && (!csr_rvalid || (csr_rreadonly && csr_writes));
     wire        dec_trap   = dec_valid && (dec_illegal || dec_is_ecall || dec_is_ebreak ||
                                            dec_is_mret || csr_bad);
-    wire        dec_serial = dec_valid && (dec_trap || dec_is_csr);
+    // Serialized: dispatched only into an empty ROB, nothing younger until it
+    // retires. Atomics and fences are serialized too, which makes each one a
+    // full fence: older stores drain first (the LSU writes committed stores
+    // before it issues any load), younger accesses wait.
+    wire        dec_serial = dec_valid && (dec_trap || dec_is_csr || dec_is_amo || dec_is_fence);
+    wire        dec_no_iq  = dec_trap || dec_is_csr;      // executed at dispatch / commit
     wire        dec_writes_rd = dec_writes_rd_raw && !dec_trap;
 
     reg         ser_busy;           // a serialized instruction is in flight
+    reg  [3:0]  amo_op_r;           // its AMO code (the only memory op in flight)
     reg         trap_is_mret;
     reg  [31:0] trap_cause, trap_pc, trap_tval;
     wire        serial_stall = dec_valid && (ser_busy || (dec_serial && !rob_empty));
@@ -163,7 +172,7 @@ module riscv_ooo_core (
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            ser_busy <= 1'b0; csr_wb_valid <= 1'b0;
+            ser_busy <= 1'b0; csr_wb_valid <= 1'b0; amo_op_r <= `AMO_NONE;
             trap_is_mret <= 1'b0; trap_cause <= 32'd0; trap_pc <= 32'd0; trap_tval <= 32'd0;
         end else begin
             csr_wb_valid <= csr_exec;
@@ -173,10 +182,14 @@ module riscv_ooo_core (
                 csr_wb_rob    <= rob_alloc_idx;
                 csr_wb_writes <= dec_writes_rd;
             end
-            if (pipeline_flush || rob_commit_valid)
+            if (pipeline_flush || rob_commit_valid) begin
                 ser_busy <= 1'b0;
-            if (dispatch_en && dec_serial)
+                amo_op_r <= `AMO_NONE;
+            end
+            if (dispatch_en && dec_serial) begin
                 ser_busy <= 1'b1;
+                amo_op_r <= dec_is_amo ? dec_amo_op : `AMO_NONE;
+            end
             if (dispatch_en && dec_trap) begin
                 trap_is_mret <= dec_is_mret;
                 trap_pc      <= fd_pc;
@@ -327,6 +340,9 @@ module riscv_ooo_core (
         .is_ecall    (dec_is_ecall),
         .is_ebreak   (dec_is_ebreak),
         .is_mret     (dec_is_mret),
+        .is_amo      (dec_is_amo),
+        .amo_op      (dec_amo_op),
+        .is_fence    (dec_is_fence),
         .decoded_valid(dec_valid)
     );
 
@@ -376,7 +392,7 @@ module riscv_ooo_core (
     issue_queue u_iq (
         .clk                    (clk),
         .rst_n                  (rst_n),
-        .dispatch_en            (dispatch_en && !dec_serial),
+        .dispatch_en            (dispatch_en && !dec_no_iq),
         .dispatch_fu_type       (dec_fu_type),
         .dispatch_alu_op        (dec_alu_op),
         .dispatch_phys_rd       (ren_phys_rd_new),
@@ -430,7 +446,7 @@ module riscv_ooo_core (
     alu u_alu (
         .alu_op    (iq_alu_op),
         .operand_a (iq_rs1_data),
-        .operand_b ((iq_uses_rs2 && !iq_is_store && !iq_is_branch) ? iq_rs2_data : iq_imm),
+        .operand_b ((iq_uses_rs2 && !iq_is_store && !iq_is_branch && !iq_is_load) ? iq_rs2_data : iq_imm),
         .result    (alu_result),
         .zero_flag (alu_zero)
     );
@@ -502,6 +518,7 @@ module riscv_ooo_core (
         .addr           (alu_result),   // Address computed by ALU (base + offset)
         .store_data     (iq_rs2_data),
         .mem_type       (iq_mem_type),
+        .amo_op         (amo_op_r),
         .rob_idx        (iq_rob_idx),
         .phys_rd        (iq_phys_rd),
         .dcache_addr    (dcache_addr),
@@ -511,6 +528,7 @@ module riscv_ooo_core (
         .dcache_wr      (dcache_wr),
         .dcache_ack     (dcache_ack),
         .dcache_mem_type(dcache_mem_type),
+        .dcache_amo     (dcache_amo),
         .result_valid   (lsu_result_valid),
         .result_data    (lsu_result_data),
         .result_phys_rd (lsu_result_phys_rd),

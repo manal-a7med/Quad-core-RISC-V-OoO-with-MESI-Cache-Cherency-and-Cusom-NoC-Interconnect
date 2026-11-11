@@ -3,9 +3,10 @@
 # =============================================================================
 #   make sim         Run all RTL testbenches (fails if any check fails)
 #   make sim-<name>  Run one testbench (mesi arbiter cache core dep corner quad repro)
-#   make isa         rv32ui riscv-tests + system tests on one core (RISCV_TESTS=<checkout>)
+#   make isa         rv32ui + rv32ua riscv-tests and system tests on one core (RISCV_TESTS=<checkout>)
 #   make soc-isa     the same programs on the full 4-core SoC with caches (after make isa)
-#   make sw          Build the demo programs in sw/ (hello, parsum) to build/sw/
+#   make coh-random  Constrained-random coherence test of the memory system (SEEDS, OPS)
+#   make sw          Build the demo programs in sw/ (hello, parsum, atomics, prodcons, litmus)
 #   make soc-run PROG=hello   Run a demo program on the full SoC (UART printed)
 #   make fpga-sim PROG=hello  Board-level simulation of fpga_top (UART decoded from the pin)
 #   make fpga PROG=hello      Vivado bitstream for the Nexys A7-100T (CLKOUT_DIV=20: 50 MHz)
@@ -46,12 +47,12 @@ SOC_RTL   = $(CORE_RTL) $(CACHE_RTL) $(COH_RTL) $(MEM_RTL) $(IO_RTL) rtl/top/qua
 
 TESTS = mesi arbiter cache core dep corner quad
 
-.PHONY: all sim $(addprefix sim-,$(TESTS)) sim-repro isa synth soc-isa sw soc-run fpga-sim fpga program lint lint-soc synth-soc synth-fpga results animate gui clean help
+.PHONY: all sim $(addprefix sim-,$(TESTS)) sim-repro isa synth soc-isa coh-random sw soc-run fpga-sim fpga program lint lint-soc synth-soc synth-fpga results animate gui clean help
 
 all: sim
 
 help:
-	@sed -n '2,15p' Makefile
+	@awk 'NR > 3 && /^# Tools/ { exit } NR > 3' Makefile
 
 $(OUT_DIR):
 	@mkdir -p $(OUT_DIR)
@@ -102,13 +103,28 @@ lint-soc: | $(OUT_DIR)
 soc-isa:
 	sh scripts/soc_isa.sh
 
+# Constrained-random coherence test: random loads, stores, amoadd and LR/SC
+# driven into the four L1D ports of the real memory system, every result
+# checked (see verif/coherence/tb_coh_random.v). OPS is per port.
+SEEDS ?= 1 2 3
+OPS   ?= 2000
+coh-random: $(OUT_DIR)/coh_random.vvp
+	@for s in $(SEEDS); do \
+	    $(VVP) -n $< +seed=$$s +ops=$(OPS) > $(OUT_DIR)/coh_random_$$s.log; \
+	    grep -E '^(ERROR|RESULT|coherence|  )' $(OUT_DIR)/coh_random_$$s.log; \
+	    grep -q 'RESULT PASS' $(OUT_DIR)/coh_random_$$s.log || exit 1; \
+	done
+
+$(OUT_DIR)/coh_random.vvp: $(SOC_RTL) verif/coherence/tb_coh_random.v | $(OUT_DIR)
+	$(IVERILOG) $(INC_FLAGS) -DNO_UART_ECHO -o $@ $(SOC_RTL) verif/coherence/tb_coh_random.v
+
 # Demo programs (C, bare metal, all four harts). Each builds to
 #   build/sw/<prog>.hex       one 32-bit word per line (simulation)
 #   build/sw/<prog>.line.hex  one 256-bit line per line (FPGA memory image)
 RV_CC      ?= riscv64-unknown-elf-gcc
 RV_OBJCOPY ?= riscv64-unknown-elf-objcopy
 RV_OBJDUMP ?= riscv64-unknown-elf-objdump
-RV_CFLAGS   = -march=rv32i_zicsr -mabi=ilp32 -O2 -ffreestanding -fno-builtin -nostdlib -nostartfiles \
+RV_CFLAGS   = -march=rv32ia_zicsr -mabi=ilp32 -O2 -ffreestanding -fno-builtin -nostdlib -nostartfiles \
               -Wl,--no-warn-rwx-segments -Isw/common -T sw/common/link.ld
 SW_PROGS    = $(notdir $(filter-out sw/common,$(wildcard sw/*)))
 PROG       ?= hello

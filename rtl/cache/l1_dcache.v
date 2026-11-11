@@ -21,6 +21,13 @@
 // 13). A snoop's response (snoop_resp, snoop_data_valid, snoop_data) is
 // valid in the cycle after snoop_valid and is cleared afterwards, so a stale
 // response can never be mistaken for a new one.
+//
+// Atomics (cpu_amo, RV32A): LR is a load that also sets a reservation on the
+// line. SC and the AMOs need the line in M or E, like a store; the AMO is
+// then done in one cycle in COMPARE_TAG (old word from the RAM output, new
+// word written back, old word returned). SC succeeds (returns 0) only if the
+// reservation is still held; it is lost when a snoop invalidates the line or
+// another line is filled.
 // ============================================================================
 
 `include "common_defs.vh"
@@ -38,6 +45,7 @@ module l1_dcache (
     input  wire         cpu_wr,
     output reg          cpu_ack,
     input  wire [2:0]   cpu_mem_type,
+    input  wire [3:0]   cpu_amo,         // `AMO_* code, 0 for plain loads/stores
 
     // Bus/coherence side
     output reg  [31:0]  bus_addr,
@@ -81,6 +89,7 @@ module l1_dcache (
     // ------------------------------------------------------------------
     reg [31:0] req_addr_r, req_wdata_r;
     reg        req_wr_r;
+    reg [3:0]  req_amo_r;
     reg [2:0]  req_mtype_r;
     reg        pend_way;                 // way being filled / upgraded / evicted
 
@@ -159,6 +168,19 @@ module l1_dcache (
 
     wire [31:0] hit_word = q[word_sel*32 +: 32] >> {byte_off, 3'b000};
 
+    // Atomics
+    `include "amo.vh"
+    wire        is_lr   = (req_amo_r == `AMO_LR);
+    wire        is_sc   = (req_amo_r == `AMO_SC);
+    wire        is_rmw  = (req_amo_r >= `AMO_SC);         // SC and AMOs
+    wire        wr_eff  = req_wr_r || is_rmw;              // needs the line in M
+    reg         resv_valid;
+    reg  [26:0] resv_line;
+    wire        resv_ok = resv_valid && (resv_line == req_addr_r[31:5]);
+    wire [31:0] old_word = q[word_sel*32 +: 32];
+    wire [31:0] amo_new  = amo_apply(req_amo_r, old_word, req_wdata_r);
+    wire [31:0] word_be  = 32'h0000_000F << {word_sel, 2'b00};
+
     // Store: byte lanes within the word, then the word within the line
     reg [3:0] st_mask;
     always @(*) begin
@@ -171,7 +193,8 @@ module l1_dcache (
     wire [31:0] st_lane = req_wdata_r << {byte_off, 3'b000};
     wire [31:0] st_be   = {28'd0, st_mask} << {word_sel, 2'b00};
 
-    wire store_hit_ok = cache_hit && req_wr_r && (hit_state == M || hit_state == E);
+    wire store_hit_ok = cache_hit && wr_eff && (hit_state == M || hit_state == E);
+    wire sc_fail      = is_sc && !resv_ok;               // fails without bus traffic
 
     // ------------------------------------------------------------------
     // Next state, outputs and RAM write port
@@ -193,7 +216,11 @@ module l1_dcache (
             ST_COMPARE:
                 if (snoop_valid) begin
                     // A snoop is handled this cycle: look up again next cycle
-                end else if (cache_hit && !req_wr_r) begin
+                end else if (sc_fail) begin
+                    cpu_ack    = 1'b1;
+                    cpu_rdata  = 32'd1;
+                    next_state = ST_IDLE;
+                end else if (cache_hit && !wr_eff) begin
                     cpu_ack    = 1'b1;
                     cpu_rdata  = hit_word;
                     next_state = ST_IDLE;
@@ -201,8 +228,14 @@ module l1_dcache (
                     cpu_ack    = 1'b1;
                     d_we       = 1'b1;
                     d_way      = hit_way;
-                    d_be       = st_be;
-                    d_wdata    = {8{st_lane}};
+                    if (is_rmw) begin
+                        cpu_rdata = is_sc ? 32'd0 : old_word;
+                        d_be      = word_be;
+                        d_wdata   = {8{amo_new}};
+                    end else begin
+                        d_be      = st_be;
+                        d_wdata   = {8{st_lane}};
+                    end
                     next_state = ST_IDLE;
                 end else if (cache_hit) begin
                     // Store to a Shared line
@@ -214,7 +247,7 @@ module l1_dcache (
                     next_state = ST_WB_READ;
                 end else begin
                     bus_req    = 1'b1;
-                    bus_cmd    = req_wr_r ? `BUS_READX : `BUS_READ;
+                    bus_cmd    = wr_eff ? `BUS_READX : `BUS_READ;
                     bus_addr   = line_addr;
                     next_state = ST_ALLOCATE;
                 end
@@ -234,7 +267,7 @@ module l1_dcache (
 
             ST_ALLOCATE: begin
                 bus_req  = 1'b1;
-                bus_cmd  = req_wr_r ? `BUS_READX : `BUS_READ;
+                bus_cmd  = wr_eff ? `BUS_READX : `BUS_READ;
                 bus_addr = line_addr;
                 if (bus_ack) begin
                     d_we       = 1'b1;           // whole line from the bus
@@ -285,16 +318,16 @@ module l1_dcache (
         lru_we  = 1'b0; lru_val  = ~pend_way;
         case (state)
             ST_COMPARE:
-                if (!snoop_valid && cache_hit && (!req_wr_r || store_hit_ok)) begin
+                if (!snoop_valid && !sc_fail && cache_hit && (!wr_eff || store_hit_ok)) begin
                     lru_we = 1'b1; lru_val = ~hit_way;
-                    if (req_wr_r) begin c_st_we = 1'b1; c_st_way = hit_way; c_st_val = M; end
+                    if (wr_eff) begin c_st_we = 1'b1; c_st_way = hit_way; c_st_val = M; end
                 end
             ST_WRITEBACK:
                 if (bus_ack) begin c_st_we = 1'b1; c_st_val = I; end
             ST_ALLOCATE:
                 if (bus_ack) begin
                     c_st_we = 1'b1; lru_we = 1'b1;
-                    c_st_val = req_wr_r ? M : ((bus_shared === 1'b1) ? S : E);
+                    c_st_val = wr_eff ? M : ((bus_shared === 1'b1) ? S : E);
                 end
             ST_UPGRADE:
                 if (bus_ack) begin c_st_we = 1'b1; lru_we = 1'b1; c_st_val = M; end
@@ -341,6 +374,9 @@ module l1_dcache (
             req_addr_r       <= 32'd0;
             req_wdata_r      <= 32'd0;
             req_wr_r         <= 1'b0;
+            req_amo_r        <= `AMO_NONE;
+            resv_valid       <= 1'b0;
+            resv_line        <= 27'd0;
             req_mtype_r      <= 3'd0;
             pend_way         <= 1'b0;
             snoop_resp       <= `SNOOP_NONE;
@@ -356,9 +392,24 @@ module l1_dcache (
                 req_wdata_r <= cpu_wdata;
                 req_wr_r    <= cpu_wr;
                 req_mtype_r <= cpu_mem_type;
+                req_amo_r   <= cpu_amo;
             end
 
-            if (state == ST_COMPARE && !snoop_valid && !(cache_hit && (!req_wr_r || store_hit_ok)))
+            // LR/SC reservation
+            if (state == ST_COMPARE && !snoop_valid) begin
+                if (is_lr && cache_hit) begin
+                    resv_valid <= 1'b1;
+                    resv_line  <= req_addr_r[31:5];
+                end else if (is_sc && (sc_fail || store_hit_ok)) begin
+                    resv_valid <= 1'b0;                     // SC done either way
+                end
+            end
+            if (state == ST_ALLOCATE && bus_ack && req_addr_r[31:5] != resv_line)
+                resv_valid <= 1'b0;                         // another line filled
+            if (s_st_we && s_st_val == I && snoop_addr[31:5] == resv_line)
+                resv_valid <= 1'b0;                         // line taken by another core
+
+            if (state == ST_COMPARE && !snoop_valid && !sc_fail && !(cache_hit && (!wr_eff || store_hit_ok)))
                 pend_way <= cache_hit ? hit_way : vic_way;     // upgrade or miss
 
             // Snoop response (valid in the cycle after snoop_valid)

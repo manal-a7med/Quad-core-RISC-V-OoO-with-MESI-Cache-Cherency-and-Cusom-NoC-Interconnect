@@ -23,5 +23,16 @@ static inline void uart_puthex(unsigned v)
         uart_putc(d < 10 ? '0' + d : 'a' + d - 10);
     }
 }
+static inline void uart_putdec(unsigned v)
+{
+    char buf[10];
+    int n = 0;
+    do {
+        buf[n++] = '0' + v % 10;
+        v /= 10;
+    } while (v);
+    while (n)
+        uart_putc(buf[--n]);
+}
 
 #endif

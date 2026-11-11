@@ -29,10 +29,14 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y iverilog gcc-riscv64-unknown-elf
       - name: Fetch riscv-tests
         run: git clone --depth 1 https://github.com/riscv-software-src/riscv-tests.git ../riscv-tests
-      - name: rv32ui compliance
+      - name: rv32ui + rv32ua compliance
         run: make isa
       - name: Demo programs on the 4-core SoC (UART output checked)
-        run: make soc-run PROG=hello && make soc-run PROG=parsum
+        run: |
+          make soc-run PROG=hello && make soc-run PROG=parsum
+          make soc-run PROG=atomics && make soc-run PROG=prodcons && make soc-run PROG=litmus
+      - name: Constrained-random coherence test (3 seeds)
+        run: make coh-random
       - name: Board-level simulation of the FPGA top (UART decoded from the pin)
         run: make fpga-sim PROG=hello && make fpga-sim PROG=parsum
       - uses: actions/upload-artifact@v4

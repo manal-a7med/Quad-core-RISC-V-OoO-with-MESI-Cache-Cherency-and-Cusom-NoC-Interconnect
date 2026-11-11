@@ -28,6 +28,9 @@ module decode_unit (
     output reg         is_ecall,
     output reg         is_ebreak,
     output reg         is_mret,
+    output reg         is_amo,        // RV32A: LR/SC/AMO (word); goes to the LSU as a load
+    output reg  [3:0]  amo_op,        // `AMO_* code
+    output reg         is_fence,      // FENCE / FENCE.I
     output reg         decoded_valid
 );
 
@@ -50,6 +53,7 @@ module decode_unit (
         illegal_instr = 1'b0;
         is_csr = 1'b0; csr_op = 2'b00; csr_uimm = 1'b0;
         is_ecall = 1'b0; is_ebreak = 1'b0; is_mret = 1'b0;
+        is_amo = 1'b0; amo_op = `AMO_NONE; is_fence = 1'b0;
         decoded_valid = instr_valid && (instr != 32'h00000013);
 
         case(opcode)
@@ -121,8 +125,34 @@ module decode_unit (
                 fu_type = `FU_BRANCH; alu_op = `ALU_ADD;
                 imm = {{20{instr[31]}}, instr[31:20]};
             end
-            7'b0001111: begin // FENCE / FENCE.I: no-op on a single in-order-commit
-                fu_type = `FU_ALU; alu_op = `ALU_ADD; // core (memory ordering is P3)
+            7'b0001111: begin // FENCE / FENCE.I: an ALU no-op, serialized by the core
+                fu_type = `FU_ALU; alu_op = `ALU_ADD;
+                is_fence = 1'b1;
+            end
+            7'b0101111: begin // RV32A (aq/rl ignored: every atomic is fully ordered)
+                case (instr[31:27])
+                    5'b00010: amo_op = (rs2 == 5'd0) ? `AMO_LR : `AMO_NONE;
+                    5'b00011: amo_op = `AMO_SC;
+                    5'b00001: amo_op = `AMO_SWAP;
+                    5'b00000: amo_op = `AMO_ADD;
+                    5'b00100: amo_op = `AMO_XOR;
+                    5'b01100: amo_op = `AMO_AND;
+                    5'b01000: amo_op = `AMO_OR;
+                    5'b10000: amo_op = `AMO_MIN;
+                    5'b10100: amo_op = `AMO_MAX;
+                    5'b11000: amo_op = `AMO_MINU;
+                    5'b11100: amo_op = `AMO_MAXU;
+                    default:  amo_op = `AMO_NONE;
+                endcase
+                if (instr[14:12] == 3'b010 && amo_op != `AMO_NONE) begin
+                    is_amo = 1'b1; is_load = 1'b1;
+                    uses_rs1 = 1'b1; uses_rs2 = (amo_op != `AMO_LR);
+                    writes_rd = (rd != 5'd0);
+                    fu_type = `FU_LOAD; alu_op = `ALU_ADD;   // address = rs1 + 0
+                end else begin
+                    amo_op = `AMO_NONE;
+                    illegal_instr = 1'b1;
+                end
             end
             7'b1110011: begin // SYSTEM
                 fu_type = `FU_ALU; alu_op = `ALU_PASS_B;

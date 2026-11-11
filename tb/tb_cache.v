@@ -19,6 +19,7 @@ module tb_cache;
     reg          cpu_req = 0, cpu_wr = 0;
     wire         cpu_ack;
     reg  [2:0]   cpu_mem_type = `MEM_WORD;
+    reg  [3:0]   cpu_amo = `AMO_NONE;
     wire [31:0]  bus_addr;
     wire [255:0] bus_wdata;
     reg  [255:0] bus_rdata = 0;
@@ -35,7 +36,7 @@ module tb_cache;
     l1_dcache dut (
         .clk(clk), .rst_n(rst_n),
         .cpu_addr(cpu_addr), .cpu_wdata(cpu_wdata), .cpu_rdata(cpu_rdata), .cpu_req(cpu_req),
-        .cpu_wr(cpu_wr), .cpu_ack(cpu_ack), .cpu_mem_type(cpu_mem_type),
+        .cpu_wr(cpu_wr), .cpu_ack(cpu_ack), .cpu_mem_type(cpu_mem_type), .cpu_amo(cpu_amo),
         .bus_addr(bus_addr), .bus_wdata(bus_wdata), .bus_rdata(bus_rdata), .bus_req(bus_req),
         .bus_cmd(bus_cmd), .bus_ack(bus_ack), .bus_grant(bus_grant), .bus_shared(bus_shared),
         .snoop_addr(snoop_addr), .snoop_cmd(snoop_cmd), .snoop_valid(snoop_valid),
