@@ -137,7 +137,7 @@ def soc_area():
 
 def soc_logs():
     out = {}
-    for p in ("hello", "parsum"):
+    for p in ("hello", "parsum", "atomics", "prodcons", "litmus"):
         t = read(f"soc/{p}.fpga.log") or read(f"soc/{p}.log")
         uart = []
         for l in t.splitlines():
@@ -160,6 +160,42 @@ def soc_isa():
     return d
 
 
+def litmus_rows(d):
+    rows = []
+    for l in d["uart"]:
+        m = re.match(r"(\S+)\s+(allowed|forbidden)\s+(.+?): (.*?)\s+\[(.*)\]$", l)
+        if m:
+            n = re.search(r"(\d+)", m[4])
+            rows.append(dict(test=m[1], rule=m[2], outcome=m[3], seen=int(n[1]) if n else 0,
+                             dist=m[5].strip()))
+    return rows
+
+
+def coh_runs():
+    runs = []
+    for f in sorted(os.listdir(os.path.join(V, "coh"))) if os.path.isdir(os.path.join(V, "coh")) else []:
+        if not f.startswith("coh_random_"):
+            continue
+        t = read(f"coh/{f}")
+        g = lambda rx, k=1: (lambda m: m[k] if m else "?")(re.search(rx, t))
+        runs.append(dict(seed=g(r"seed (\d+)"), ops=g(r"(\d+) ops per port"), cycles=g(r"ports?, (\d+) cycles"),
+                         checks=g(r"checks (\d+)"), swmr=g(r"SWMR checks (\d+)"),
+                         amo=g(r"amoadd (\d+)"), sc=g(r"SC ok (\d+)"), scf=g(r"failed (\d+)"),
+                         rd=g(r"BusRd (\d+)"), rdx=g(r"BusRdX (\d+)"), upgr=g(r"BusUpgr (\d+)"),
+                         flush=g(r"Flush (\d+)"), wb=g(r"writebacks (\d+)"),
+                         ok="RESULT PASS" in t))
+    return runs
+
+
+def mutants():
+    out = []
+    for l in read("coh/mutants.txt").splitlines():
+        m = re.match(r"mutant (\S+): (CAUGHT|MISSED|NOT APPLIED)\s*\|?\s*([^|]*)\|?\s*(.*)", l)
+        if m:
+            out.append(dict(name=m[1], ok=m[2] == "CAUGHT", what=m[3].strip(), err=m[4].strip()))
+    return out
+
+
 def yosys_ok(v):
     t = read(f"{v}/yosys_check.txt")
     err = re.search(r"ERROR: (.*)", t)
@@ -173,6 +209,10 @@ yb, yb_err = yosys_ok("before")
 ya, _ = yosys_ok("after")
 x7 = synth_x7()
 area, demos, sisa = soc_area(), soc_logs(), soc_isa()
+ua = isa("after", "rv32ua")
+lit, cohr, muts = litmus_rows(demos["litmus"]), coh_runs(), mutants()
+_lr = re.search(r"litmus: (\d+) runs", "\n".join(demos["litmus"]["uart"]))
+LIT_RUNS = _lr[1] if _lr else "?"
 dis_demo, dis_prog = disasm("demo.dis"), disasm("prog.dis")
 demo, demo_fl = trace("after/demo.log")
 rp_b, rp_b_fl = trace("before/repro.log")
@@ -313,6 +353,21 @@ if area:
     soc_lut_pct = f'{100*area["LUT"]/CAP["LUT"]:.0f}%'
 else:
     area_bars, area_rows, soc_lut_pct = "", "", "n/a"
+ua_chips = "".join(
+    f'<span class="chip {"ok" if v == "PASS" else "bad"}" title="{t}: {v}">{t}</span>' for t, v in sorted(ua.items()))
+lit_rows = "".join(
+    f'<tr><td class="mono">{esc(r["test"])}</td><td>{esc(r["outcome"])}</td>'
+    f'<td>{"forbidden" if r["rule"] == "forbidden" else "allowed"}</td><td class="num">{r["seen"]}</td>'
+    f'<td>{pill(r["seen"] == 0, "never seen", "SEEN") if r["rule"] == "forbidden" else ""}</td>'
+    f'<td class="mono muted">{esc(r["dist"])}</td></tr>' for r in lit)
+coh_rows = "".join(
+    f'<tr><td class="num">{r["seed"]}</td><td class="num">{int(r["ops"]) * 4:,}</td><td class="num">{int(r["checks"]):,}</td>'
+    f'<td class="num">{int(r["swmr"]):,}</td><td class="num">{r["amo"]} / {r["sc"]} / {r["scf"]}</td>'
+    f'<td class="num">{r["rd"]} / {r["rdx"]} / {r["upgr"]} / {r["flush"]}</td><td class="num">{r["wb"]}</td>'
+    f'<td>{pill(r["ok"])}</td></tr>' for r in cohr if r["ops"] != "?")
+mut_rows = "".join(
+    f'<tr><td>{esc(m["what"])}</td><td>{pill(m["ok"], "caught", "missed")}</td>'
+    f'<td class="mono muted">{esc(m["err"][:72])}</td></tr>' for m in muts)
 sisa_chips = "".join(
     f'<span class="chip {"ok" if v == "PASS" else "bad"}" title="{t}: {v}">{t}</span>' for t, v in sorted(sisa.items()))
 
@@ -419,11 +474,11 @@ code {{ font-family: var(--f-mono); font-size: .88em; }}
 </style>
 <div class="wrap">
 <header>
-  <span class="eyebrow">Quad-core RISC-V OoO with MESI · Phases P0 to P2</span>
+  <span class="eyebrow">Quad-core RISC-V OoO with MESI · Phases P0 to P3</span>
   <h1>Correctness, multicore and FPGA results</h1>
   <p class="muted">Every number on this page comes from a simulation, test or synthesis run on the
-  RTL. The baseline is the imported design; "fixed" is the core after the P0 and P1 changes. The
-  multicore and FPGA sections run the whole four-core SoC.</p>
+  RTL. The baseline is the imported design; "fixed" is the current core. The multicore, atomics and
+  FPGA sections run the whole four-core SoC.</p>
   <div class="refs">baseline {esc(ref_b)} · fixed {esc(ref_a)} · generated {stamp}</div>
 </header>
 
@@ -435,8 +490,12 @@ code {{ font-family: var(--f-mono); font-size: .88em; }}
       <span class="v"><span class="from">{npass(ib)}/{len(ib)}</span><span class="arrow">→</span>{npass(ia)}/{len(ia)}</span></div>
     <div class="stat"><span class="k">Core passes Yosys synthesis</span>
       <span class="v"><span class="from">{"yes" if yb else "no"}</span><span class="arrow">→</span>{"yes" if ya else "no"}</span></div>
+    <div class="stat"><span class="k">rv32ua atomics tests</span>
+      <span class="v">{npass(ua)}/{len(ua)}</span></div>
     <div class="stat"><span class="k">ISA programs on the 4-core SoC</span>
       <span class="v">{npass(sisa)}/{len(sisa)}</span></div>
+    <div class="stat"><span class="k">Injected coherence bugs caught</span>
+      <span class="v">{sum(m["ok"] for m in muts)}/{len(muts)}</span></div>
     <div class="stat"><span class="k">Whole SoC, LUTs of XC7A100T</span>
       <span class="v">{soc_lut_pct}</span></div>
   </div>
@@ -459,6 +518,8 @@ code {{ font-family: var(--f-mono); font-size: .88em; }}
     <div><span class="lbl">Baseline · {npass(ib)}/{len(ib)}</span><div class="chips">{chips(ib)}</div></div>
     <div><span class="lbl">Fixed · {npass(ia)}/{len(ia)}</span><div class="chips">{chips(ia)}</div></div>
   </div>
+  <div><span class="lbl">Atomics (rv32ua, added in P3; the baseline has no atomics) · {npass(ua)}/{len(ua)}</span>
+    <div class="chips">{ua_chips}</div></div>
 </section>
 
 <section>
@@ -501,9 +562,51 @@ code {{ font-family: var(--f-mono); font-size: .88em; }}
 </section>
 
 <section>
+  <h2>Atomics and synchronisation on four cores</h2>
+  <p>In <b>atomics</b> all four harts add 1 to a shared counter 200 times each, three ways. A plain
+  load-add-store loses most of the updates, because the harts overwrite each other. <code>amoadd.w</code>
+  and a spinlock built from <code>lr.w</code>/<code>sc.w</code> both reach exactly 800; the lock
+  line shows which hart held the lock each time. In <b>prodcons</b> hart 0 feeds numbered items
+  through a 16-slot ring buffer to the other three, which claim items with compare-and-swap. Fences
+  order each item before the index that publishes it, and every item must arrive exactly once.</p>
+  <div class="cols">{demo_card("atomics", "atomics", demos["atomics"])}{demo_card("prodcons", "prodcons", demos["prodcons"])}</div>
+</section>
+
+<section>
+  <h2>Memory-model litmus tests</h2>
+  <p>Classic two- and four-thread tests (<code>sw/litmus</code>), each run {LIT_RUNS} times per copy on the
+  SoC with warmed caches and a random start skew. An outcome the RISC-V memory model forbids must never
+  appear; "allowed" outcomes may or may not, depending on how much this core reorders. Writing these
+  tests exposed one bug, now fixed: two loads of the same address could be performed out of order,
+  which the CoRR rule forbids. The last column counts every outcome seen (r-values as bits).</p>
+  <div class="scroll"><table>
+    <thead><tr><th>Test</th><th>Outcome</th><th>Rule</th><th class="num">Seen</th><th></th><th>All outcomes</th></tr></thead>
+    <tbody>{lit_rows}</tbody></table></div>
+</section>
+
+<section>
+  <h2>Random coherence test</h2>
+  <p>The testbench drives random loads, stores, <code>amoadd</code> and LR/SC straight into the four L1
+  data caches of the real memory system (<code>make coh-random</code>). It uses 24 lines that collide in
+  both cache levels, so lines are evicted and written back all the time. Every load is checked: no stale
+  value, no value going backwards, and a port's own stores always seen. Every cycle it also checks the
+  single-writer rule (SWMR): a line in M or E is in no other cache. To show these checks have teeth, six
+  designs with a deliberate coherence bug are run through the same test (<code>make coh-mutants</code>),
+  and each one must fail.</p>
+  <div class="scroll"><table>
+    <thead><tr><th class="num">Seed</th><th class="num">Operations</th><th class="num">Load checks</th>
+    <th class="num">SWMR checks</th><th class="num">amoadd / SC ok / SC failed</th><th class="num">BusRd / RdX / Upgr / Flush</th>
+    <th class="num">L2 writebacks</th><th></th></tr></thead>
+    <tbody>{coh_rows}</tbody></table></div>
+  <div class="scroll"><table>
+    <thead><tr><th>Injected bug</th><th></th><th>First error the test reported</th></tr></thead>
+    <tbody>{mut_rows}</tbody></table></div>
+</section>
+
+<section>
   <h2>ISA tests on the full SoC</h2>
-  <p>The rv32ui tests, the system test (CSRs, traps) and a 24 KB memory stress test, run through
-  the caches and the coherence bus on the four-core SoC.</p>
+  <p>The rv32ui and rv32ua tests, the system test (CSRs, traps) and a 24 KB memory stress test, run
+  through the caches and the coherence bus on the four-core SoC.</p>
   <div class="chips">{sisa_chips}</div>
 </section>
 
@@ -524,7 +627,7 @@ code {{ font-family: var(--f-mono); font-size: .88em; }}
 
 <footer>
   <span>Regenerate: <code>sh scripts/viz/collect.sh &lt;riscv-tests checkout&gt; &amp;&amp; python3 scripts/viz/make_results.py</code></span>
-  <span>Sources: <code>review/tb_repro.v</code>, <code>verif/riscv-tests/</code>, <code>verif/demo/ooo_demo.S</code>, <code>verif/trace.vh</code>, <code>sw/</code>, <code>verif/soc/</code>, <code>build/synth_fpga.log</code> (<code>make synth-fpga</code>)</span>
+  <span>Sources: <code>review/tb_repro.v</code>, <code>verif/riscv-tests/</code>, <code>verif/demo/ooo_demo.S</code>, <code>verif/trace.vh</code>, <code>sw/</code>, <code>verif/soc/</code>, <code>verif/coherence/</code>, <code>build/synth_fpga.log</code> (<code>make synth-fpga</code>)</span>
 </footer>
 </div>
 """

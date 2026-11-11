@@ -30,9 +30,14 @@ make soc-run PROG=litmus              # memory-model litmus tests (MP, SB, CoRR,
 make fpga-sim PROG=hello              # board-level simulation of fpga_top
 ```
 
+`make bench RISCV_TESTS=../riscv-tests` builds the riscv-tests benchmarks
+(dhrystone, qsort, rsort, median, towers, ...) for the SoC and runs them on a
+Verilator model of it (needs `verilator`); numbers are kept in `results/`.
+
 `make coh-random` (no RISC-V GCC needed) drives random loads, stores and
 atomics into the four L1 data caches of the real memory system and checks
 every result for coherence (3 seeds by default; `SEEDS="1 2" OPS=5000`).
+`make coh-mutants` shows the test failing on six designs with injected bugs.
 
 ## FPGA (Digilent Nexys A7-100T)
 
@@ -68,6 +73,7 @@ paths, e.g. `make IVERILOG=C:/iverilog/bin/iverilog.exe VVP=C:/iverilog/bin/vvp.
 | `verif` | riscv-tests harness, system tests, SoC and board-level testbenches, random coherence test |
 | `review` | Bug reproduction testbench from the design review |
 | `docs` | Reports, diagrams, and `docs/plan/` (roadmap and strategy) |
+| `results` | Benchmark numbers, one folder per date |
 | `synth` | Nexys A7 constraints, Vivado build and program scripts |
 
 ## Plan
