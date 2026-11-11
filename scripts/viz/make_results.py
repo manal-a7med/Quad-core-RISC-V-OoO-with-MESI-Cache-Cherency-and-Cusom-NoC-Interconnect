@@ -39,9 +39,9 @@ def isa(v, suite="rv32ui"):
         m = re.match(r"(\S+) RESULT (\w+)", l)
         if m:
             cur[m[1]] = m[2]
-        elif l.startswith(suite + ":"):
-            res = cur
         elif re.match(r"\w+: \d+ passed", l):
+            if l.startswith(suite + ":"):
+                res = cur
             cur = {}
     return res
 
@@ -98,6 +98,7 @@ LUTRAM_LUTS = {"RAM64M": 4, "RAM32M": 4, "RAM128X1D": 4, "RAM64X1D": 2, "RAM32X1
 CORE_MODS = {"riscv_ooo_core", "alu", "branch_unit", "csr_file", "decode_unit", "fetch_unit",
              "issue_queue", "load_store_unit", "register_file", "rename_unit", "reorder_buffer"}
 # First full-SoC measurement, before the P2 area work (commit 2b7097a)
+AREA_P3 = 53900   # after P3 (atomics), before the P4 performance work
 AREA_FIRST = 88491
 
 
@@ -681,12 +682,13 @@ code {{ font-family: var(--f-mono); font-size: .88em; }}
   phase P4: instruction fetch at one instruction per cycle, branch prediction (two-bit counters,
   return address stack, a small target buffer for indirect jumps), loads that no longer freeze the
   issue queue, wakeup bypass, back-to-back cache accesses and the M extension. Cycles are those of
-  each benchmark's timed region. Dhrystone: {dmips(perf_p3.get("dhrystone") or {{}})} to
+  each benchmark's timed region; "Predicted" is the share of hart 0's branches and jumps that
+  were predicted correctly. Dhrystone: {dmips(perf_p3.get("dhrystone") or {{}})} to
   {dmips(dhry)} DMIPS/MHz.</p>
   <div class="scroll"><table>
-    <thead><tr><th>Benchmark</th><th class="num">Instructions</th><th class="num">P3 design, cycles</th>
-      <th class="num">Now, cycles</th><th class="num">Cycles per instruction</th><th>Speed-up</th>
-      <th class="num">Branches predicted correctly</th></tr></thead>
+    <thead><tr><th>Benchmark</th><th class="num">Instructions</th><th class="num">Cycles, P3 design</th>
+      <th class="num">Cycles, now</th><th class="num">Cycles / instr.</th><th>Speed-up</th>
+      <th class="num">Predicted</th></tr></thead>
     <tbody>{perf_rows}</tbody></table></div>
   <p>What each part contributes: the same benchmarks on builds with one feature switched off
   (<code>make ablation</code>). The columns give the run time relative to the full design.
@@ -718,7 +720,8 @@ code {{ font-family: var(--f-mono); font-size: .88em; }}
   Artix-7 by Yosys <code>synth_xilinx</code>, before place and route. Yosys usually reports more
   LUTs than Vivado. The first full-SoC estimate was {AREA_FIRST:,} LUTs
   ({100*AREA_FIRST/CAP["LUT"]:.0f}% of the device); moving the cache data, tags and state into block
-  and LUT RAM and simplifying the bus brought it to the figure below.</p>
+  and LUT RAM and simplifying the bus brought it to {AREA_P3:,} (85%). The performance work of
+  phase P4 (branch prediction, multiply/divide, result holding) added the rest of the figure below.</p>
   <div class="cols top">
     <div class="scroll"><table>
       <thead><tr><th>Resource</th><th class="num">Used</th><th class="num">XC7A100T</th><th class="num">Used</th></tr></thead>
