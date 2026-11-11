@@ -35,6 +35,7 @@ jobs:
         run: |
           make soc-run PROG=hello && make soc-run PROG=parsum
           make soc-run PROG=atomics && make soc-run PROG=prodcons && make soc-run PROG=litmus
+          make soc-run PROG=memstress
       - name: Constrained-random coherence test (3 seeds)
         run: make coh-random
       - name: Board-level simulation of the FPGA top (UART decoded from the pin)

@@ -6,10 +6,17 @@
 // read and no reset, so it maps to block RAM; tags have no reset (LUT RAM);
 // valid bits are a reset flip-flop vector.
 //
-// A request is identified by its address. If the core moves to another PC
-// while a lookup or miss is in flight (a branch redirect), the response for
-// the old address is dropped instead of being delivered as the instruction
-// at the new PC (review bug 10).
+// Lookup is pipelined, one instruction per cycle on hits. Every cycle the
+// cache looks up the address the core will ask for next: cpu_addr + 4 when it
+// is delivering an instruction this cycle, otherwise cpu_addr itself. The
+// next cycle it delivers that instruction if the core is indeed asking for
+// that address. After a redirect (branch, trap) the address does not match,
+// nothing is delivered for one cycle, and the lookup restarts at the new PC.
+// An instruction is therefore never delivered for the wrong address (review
+// bug 10).
+//
+// A miss fetches the whole line from memory. The line is filled even if the
+// core has moved on in the meantime.
 // ============================================================================
 
 `include "mesi_defines.vh"
@@ -20,7 +27,7 @@ module l1_icache (
 
     // CPU interface
     input  wire [31:0] cpu_addr,
-    output reg  [31:0] cpu_rdata,
+    output wire [31:0] cpu_rdata,
     input  wire        cpu_req,
     output wire        cpu_ack,
 
@@ -40,99 +47,83 @@ module l1_icache (
     localparam IDX_WIDTH = `L1I_SET_IDX_WIDTH; // 7
     localparam OFF_WIDTH = `L1I_LINE_OFFSET;   // 5
 
+    (* ram_style = "block" *)
     reg [255:0]         data_array [0:NUM_SETS-1];
     reg [TAG_WIDTH-1:0] tag_array  [0:NUM_SETS-1];
     reg [NUM_SETS-1:0]  valid;
 
-    localparam [1:0] IDLE = 2'b00, COMPARE_TAG = 2'b01, FETCH = 2'b10, FILL = 2'b11;
-    reg [1:0]  state;
-    reg [31:0] req_addr_r;
+    localparam RUN = 1'b0, FETCH = 1'b1;
+    reg         state;
+    reg [31:0]  la_r;        // address looked up last cycle
+    reg         hit_r;       // ... and whether it was in the cache
+    reg         la_ok;       // la_r/hit_r/rd_line hold a lookup
     reg [255:0] rd_line;     // registered array read
-    reg [255:0] fill_line;
-    reg        ack_r;
 
-    wire [IDX_WIDTH-1:0] cpu_index = cpu_addr[IDX_WIDTH+OFF_WIDTH-1:OFF_WIDTH];
-    wire [IDX_WIDTH-1:0] req_index = req_addr_r[IDX_WIDTH+OFF_WIDTH-1:OFF_WIDTH];
-    wire [TAG_WIDTH-1:0] req_tag   = req_addr_r[31:IDX_WIDTH+OFF_WIDTH];
-    wire [2:0]           req_word  = req_addr_r[OFF_WIDTH-1:2];
+    wire [IDX_WIDTH-1:0] la_r_index  = la_r[IDX_WIDTH+OFF_WIDTH-1:OFF_WIDTH];
+    wire [TAG_WIDTH-1:0] la_r_tag    = la_r[31:IDX_WIDTH+OFF_WIDTH];
     wire [TAG_WIDTH-1:0] inval_tag   = inval_addr[31:IDX_WIDTH+OFF_WIDTH];
     wire [IDX_WIDTH-1:0] inval_index = inval_addr[IDX_WIDTH+OFF_WIDTH-1:OFF_WIDTH];
 
-    wire same_req  = cpu_req && (cpu_addr == req_addr_r);
-    wire cache_hit = valid[req_index] && (tag_array[req_index] == req_tag);
-    wire fill_we   = (state == FETCH) && mem_ack;
+    // The core is asking for the address that was looked up
+    wire want = (state == RUN) && la_ok && cpu_req && (cpu_addr == la_r);
 
-    // Deliver only while the core still wants this address
-    assign cpu_ack = ack_r && same_req;
+    assign cpu_ack   = want && hit_r;
+    assign cpu_rdata = rd_line[la_r[OFF_WIDTH-1:2]*32 +: 32];
+
+    wire miss    = want && !hit_r;
+    wire fill_we = (state == FETCH) && mem_ack;
+
+    // Next lookup address
+    wire [31:0]          la       = cpu_ack ? (cpu_addr + 32'd4) : cpu_addr;
+    wire [IDX_WIDTH-1:0] la_index = la[IDX_WIDTH+OFF_WIDTH-1:OFF_WIDTH];
+    wire [TAG_WIDTH-1:0] la_tag   = la[31:IDX_WIDTH+OFF_WIDTH];
+    wire                 la_hit   = valid[la_index] && (tag_array[la_index] == la_tag);
 
     // Data RAM: one write port (fill), one registered read port
     always @(posedge clk) begin
-        if (fill_we) data_array[req_index] <= mem_rdata;
-        rd_line <= data_array[cpu_index];
+        if (fill_we) data_array[la_r_index] <= mem_rdata;
+        rd_line <= data_array[la_index];
     end
 
     // Tag RAM (written on fill only)
     always @(posedge clk) begin
-        if (fill_we) tag_array[req_index] <= req_tag;
+        if (fill_we) tag_array[la_r_index] <= la_r_tag;
     end
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            state      <= IDLE;
-            ack_r      <= 1'b0;
-            cpu_rdata  <= 32'd0;
-            mem_req    <= 1'b0;
-            mem_addr   <= 32'd0;
-            req_addr_r <= 32'd0;
-            fill_line  <= 256'd0;
-            valid      <= {NUM_SETS{1'b0}};
+            state    <= RUN;
+            la_r     <= 32'd0;
+            hit_r    <= 1'b0;
+            la_ok    <= 1'b0;
+            mem_req  <= 1'b0;
+            mem_addr <= 32'd0;
+            valid    <= {NUM_SETS{1'b0}};
         end else begin
-            ack_r <= 1'b0;
-
             if (invalidate && valid[inval_index] && tag_array[inval_index] == inval_tag)
                 valid[inval_index] <= 1'b0;
 
             case (state)
-                IDLE: begin
-                    if (cpu_req && !cpu_ack) begin   // (not while delivering)
-                        req_addr_r <= cpu_addr;      // rd_line is read this cycle
-                        state      <= COMPARE_TAG;
-                    end
-                end
-
-                COMPARE_TAG: begin
-                    if (!same_req) begin
-                        state <= IDLE;                // core moved on: drop
-                    end else if (cache_hit) begin
-                        cpu_rdata <= rd_line[req_word*32 +: 32];
-                        ack_r     <= 1'b1;
-                        state     <= IDLE;
-                    end else begin
+                RUN: begin
+                    if (miss) begin
                         mem_req  <= 1'b1;
-                        mem_addr <= {req_addr_r[31:OFF_WIDTH], {OFF_WIDTH{1'b0}}};
-                        state    <= FETCH;
+                        mem_addr <= {la_r[31:OFF_WIDTH], {OFF_WIDTH{1'b0}}};
+                        state    <= FETCH;          // la_r is kept for the fill
+                    end else begin
+                        la_r  <= la;
+                        hit_r <= la_hit && !(invalidate && inval_index == la_index);
+                        la_ok <= 1'b1;
                     end
                 end
 
                 FETCH: begin
-                    // The line is filled even if the core has moved on.
                     if (mem_ack) begin
-                        mem_req          <= 1'b0;
-                        fill_line        <= mem_rdata;
-                        valid[req_index] <= 1'b1;
-                        state            <= FILL;
+                        mem_req           <= 1'b0;
+                        valid[la_r_index] <= 1'b1;
+                        la_ok             <= 1'b0;  // look up again from the array
+                        state             <= RUN;
                     end
                 end
-
-                FILL: begin
-                    if (same_req) begin
-                        cpu_rdata <= fill_line[req_word*32 +: 32];
-                        ack_r     <= 1'b1;
-                    end
-                    state <= IDLE;
-                end
-
-                default: state <= IDLE;
             endcase
         end
     end

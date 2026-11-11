@@ -108,6 +108,7 @@ module riscv_ooo_core (
     wire [5:0]  lsu_result_phys_rd;
     wire [3:0]  lsu_result_rob_idx;
     wire        lsu_full;
+    wire        lsu_ready;
     wire [3:0]  rob_head_raw;
     // Age reference for IQ/LSQ ordering. commit_valid/commit_rob_idx are
     // registered, so for one cycle after a commit the ROB head has already
@@ -223,24 +224,24 @@ module riscv_ooo_core (
     );
 
     // --- Pipeline control computation ---
-    assign pipeline_stall = rob_full || iq_full || lsu_full || !ren_ready || serial_stall;
+    // (A full load/store queue does not stall dispatch: loads and stores wait
+    // in the issue queue until it has room, see lsq_ready.)
+    assign pipeline_stall = rob_full || iq_full || !ren_ready || serial_stall;
     assign pipeline_flush = rob_flush_out;
     assign flush_redirect_pc = rob_flush_redirect_pc;
 
-    // --- Track in-flight load to prevent CDB/ROB completion collision ---
-    reg load_in_flight;
-    always @(posedge clk or negedge rst_n) begin
-        if (!rst_n)
-            load_in_flight <= 1'b0;
-        else if (pipeline_flush)
-            load_in_flight <= 1'b0;
-        else if (lsu_result_valid)
-            load_in_flight <= 1'b0;
-        else if (iq_issue_valid && iq_is_load)
-            load_in_flight <= 1'b1;
-    end
-
-    wire iq_issue_stall = load_in_flight || (iq_issue_valid && iq_is_load);
+    // --- One result per cycle ---
+    // The ROB completion port and the CDB carry one result per cycle. The
+    // instruction executing this cycle (ALU, branch, jump, store) cannot wait,
+    // so it goes first; a load result that arrives in the same cycle is held
+    // by the load/store unit and the issue queue skips one cycle, which
+    // leaves the next cycle free for it. Everything else keeps issuing while
+    // loads are in flight (review bug 12: issue used to freeze for the whole
+    // load, and a load waiting for an older store could then wait for ever
+    // behind instructions that were not allowed to issue).
+    wire exec_valid     = iq_issue_valid && !iq_is_load;
+    wire lsu_accept     = lsu_result_valid && !exec_valid && !csr_wb_valid;
+    wire iq_issue_stall = lsu_result_valid && !lsu_accept;
 
     // --- CDB mux: ALU/Jump results vs Load results ---
     wire alu_exec_valid = iq_issue_valid && !iq_is_load && !iq_is_store;
@@ -248,19 +249,19 @@ module riscv_ooo_core (
 
     // (A CSR writeback never collides with the others: it is serialized, so the
     // IQ and LSU have nothing in flight that cycle.)
-    assign cdb_valid   = alu_cdb_valid || lsu_result_valid || (csr_wb_valid && csr_wb_writes);
+    assign cdb_valid   = alu_cdb_valid || lsu_accept || (csr_wb_valid && csr_wb_writes);
     assign cdb_phys_rd = csr_wb_valid ? csr_wb_phys :
-                         lsu_result_valid ? lsu_result_phys_rd : iq_phys_rd;
+                         lsu_accept ? lsu_result_phys_rd : iq_phys_rd;
     assign cdb_data    = csr_wb_valid ? csr_wb_data :
-                         lsu_result_valid ? lsu_result_data :
+                         lsu_accept ? lsu_result_data :
                          ((iq_is_branch || iq_is_jump) ? br_link_addr : alu_result);
     assign cdb_rob_idx = csr_wb_valid ? csr_wb_rob :
-                         lsu_result_valid ? lsu_result_rob_idx : iq_rob_idx;
+                         lsu_accept ? lsu_result_rob_idx : iq_rob_idx;
     assign cdb_mispredicted  = (iq_issue_valid && (iq_is_branch || iq_is_jump)) ? br_mispredicted : 1'b0;
     assign cdb_branch_target = br_target;
 
     // ROB completion also fires for stores, branches, and x0-dest instructions
-    wire rob_complete_en = (iq_issue_valid && !iq_is_load) || lsu_result_valid || csr_wb_valid;
+    wire rob_complete_en = exec_valid || lsu_accept || csr_wb_valid;
 
     // --- Decode valid gated by stall ---
     wire dispatch_en = dec_valid && !pipeline_stall && !pipeline_flush;
@@ -438,6 +439,7 @@ module riscv_ooo_core (
         .issue_mem_type         (iq_mem_type),
         .iq_full                (iq_full),
         .issue_stall            (iq_issue_stall),
+        .mem_ready              (lsu_ready),
         .rob_head               (rob_head),
         .flush                  (pipeline_flush)
     );
@@ -533,7 +535,9 @@ module riscv_ooo_core (
         .result_data    (lsu_result_data),
         .result_phys_rd (lsu_result_phys_rd),
         .result_rob_idx (lsu_result_rob_idx),
+        .result_accept  (lsu_accept),
         .lsq_full       (lsu_full),
+        .lsq_ready      (lsu_ready),
         .commit_store_en(rob_commit_valid && rob_commit_is_store),
         .commit_rob_idx (rob_commit_idx),
         .rob_head       (rob_head),

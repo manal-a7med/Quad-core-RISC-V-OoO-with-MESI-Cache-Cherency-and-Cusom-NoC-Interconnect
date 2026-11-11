@@ -8,7 +8,7 @@
 #   make bench       riscv-tests benchmarks on the 4-core SoC (Verilator; RISCV_TESTS=<checkout>)
 #   make coh-random  Constrained-random coherence test of the memory system (SEEDS, OPS)
 #   make coh-mutants Check that coh-random fails on six designs with injected coherence bugs
-#   make sw          Build the demo programs in sw/ (hello, parsum, atomics, prodcons, litmus)
+#   make sw          Build the demo programs in sw/ (hello, parsum, atomics, prodcons, litmus, memstress)
 #   make soc-run PROG=hello   Run a demo program on the full SoC (UART printed)
 #   make fpga-sim PROG=hello  Board-level simulation of fpga_top (UART decoded from the pin)
 #   make fpga PROG=hello      Vivado bitstream for the Nexys A7-100T (CLKOUT_DIV=20: 50 MHz)
@@ -142,7 +142,7 @@ RV_OBJCOPY ?= riscv64-unknown-elf-objcopy
 RV_OBJDUMP ?= riscv64-unknown-elf-objdump
 RV_CFLAGS   = -march=rv32ia_zicsr -mabi=ilp32 -O2 -ffreestanding -fno-builtin -nostdlib -nostartfiles \
               -Wl,--no-warn-rwx-segments -Isw/common -T sw/common/link.ld
-SW_PROGS    = $(notdir $(filter-out sw/common,$(wildcard sw/*)))
+SW_PROGS    = $(notdir $(filter-out sw/common sw/bench,$(wildcard sw/*)))
 PROG       ?= hello
 
 sw: $(foreach p,$(SW_PROGS),$(OUT_DIR)/sw/$(p).line.hex)

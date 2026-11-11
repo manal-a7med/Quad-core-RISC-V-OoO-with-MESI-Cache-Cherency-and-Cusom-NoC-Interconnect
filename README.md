@@ -27,6 +27,7 @@ make soc-run PROG=parsum              # 4-hart parallel array sum
 make soc-run PROG=atomics             # shared counter: plain vs amoadd vs LR/SC lock
 make soc-run PROG=prodcons            # producer/consumer ring buffer (fences + CAS)
 make soc-run PROG=litmus              # memory-model litmus tests (MP, SB, CoRR, LB, IRIW)
+make soc-run PROG=memstress           # load/store queue stress: bursts of stores and loads
 make fpga-sim PROG=hello              # board-level simulation of fpga_top
 ```
 
