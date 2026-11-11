@@ -1,4 +1,4 @@
-﻿# Simulation waveforms and outputs
+# Simulation waveforms and outputs
 *.vcd
 *.vvp
 *.log
@@ -17,3 +17,6 @@ env/
 Thumbs.db
 .vscode/
 .idea/
+
+# Build outputs
+build/
