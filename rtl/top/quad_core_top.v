@@ -33,6 +33,7 @@ module quad_core_top #(
     // ========================================================================
     // I-Cache: core ↔ L1I
     wire [31:0]  ic_addr   [0:3];
+    wire [31:0]  ic_naddr  [0:3];
     wire [31:0]  ic_rdata  [0:3];
     wire         ic_req    [0:3];
     wire         ic_ack    [0:3];
@@ -148,6 +149,7 @@ module quad_core_top #(
                 .rst_n          (rst_n),
                 .core_id        (gi[1:0]),
                 .icache_addr    (ic_addr[gi]),
+                .icache_next_addr(ic_naddr[gi]),
                 .icache_rdata   (ic_rdata[gi]),
                 .icache_req     (ic_req[gi]),
                 .icache_ack     (ic_ack[gi]),
@@ -166,6 +168,7 @@ module quad_core_top #(
                 .clk        (clk),
                 .rst_n      (rst_n),
                 .cpu_addr   (ic_addr[gi]),
+                .cpu_next_addr(ic_naddr[gi]),
                 .cpu_rdata  (ic_rdata[gi]),
                 .cpu_req    (ic_req[gi]),
                 .cpu_ack    (ic_ack[gi]),

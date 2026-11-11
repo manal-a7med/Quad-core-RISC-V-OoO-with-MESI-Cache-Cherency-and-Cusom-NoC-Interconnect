@@ -109,6 +109,11 @@ module tb_ooo_corner_cases;
             32'h60: icache_rdata = 32'h3E700913; // ADDI x18, x0,  999    -> FLUSHED speculative instruction!
             32'h64: icache_rdata = 32'h123459B7; // LUI  x19, 0x12345     -> x19 = 0x12345000
             32'h68: icache_rdata = 32'h01190A33; // ADD  x20, x18, x17    -> x20 = 25 + 32 = 57
+
+            // --- Category 9: Out-of-order issue past an instruction waiting for a load ---
+            32'h6C: icache_rdata = 32'h00802A83; // LW   x21, 8(x0)       -> x21 = 22 (from memory, takes a few cycles)
+            32'h70: icache_rdata = 32'h001A8B33; // ADD  x22, x21, x1     -> x22 = 22 + 15 = 37 (waits for the load)
+            32'h74: icache_rdata = 32'h00700B93; // ADDI x23, x0,  7      -> x23 = 7 (issued before the ADD)
             default: icache_rdata = 32'h00000013; // NOP
         endcase
     end
@@ -124,7 +129,7 @@ module tb_ooo_corner_cases;
             dcache_ack   <= 0;
             dcache_rdata <= 0;
             for (mi = 0; mi < 256; mi = mi + 1) dmem[mi] <= 32'd0;
-        end else if (dcache_req) begin
+        end else if (dcache_req && !dcache_ack) begin   // one answer per request
             dcache_ack <= 1;
             if (dcache_wr) begin
                 dmem[dcache_addr[9:2]] <= dcache_wdata;
@@ -163,11 +168,13 @@ module tb_ooo_corner_cases;
     // =========================================================================
     //  Self-Checking Scoreboard
     // =========================================================================
-    reg [31:0] exp_reg [0:20];
-    reg [8*42:1] desc  [0:20];
+    reg [31:0] exp_reg [0:23];
+    reg [8*42:1] desc  [0:23];
     integer    commit_count;
     integer    flush_count;
     integer    ooo_sll_before_and;
+    integer    ooo_issues;
+    reg [31:0] max_issued_pc;
     reg        and_x14_done;
     integer    pass_cnt, fail_cnt;
     integer    r;
@@ -195,10 +202,15 @@ module tb_ooo_corner_cases;
         exp_reg[18] = 32'd25;       desc[18] = "ADDI 25 (flushed 999 did not corrupt)";
         exp_reg[19] = 32'h12345000; desc[19] = "LUI 0x12345 at branch target";
         exp_reg[20] = 32'd57;       desc[20] = "ADD x18 + x17 = 57 after branch flush";
+        exp_reg[21] = 32'd22;       desc[21] = "LW 8(x0) = 22 (read from memory)";
+        exp_reg[22] = 32'd37;       desc[22] = "ADD x21 + x1 = 37 (waited for the load)";
+        exp_reg[23] = 32'd7;        desc[23] = "ADDI 7 (issued before the older ADD)";
 
         commit_count       = 0;
         flush_count        = 0;
         ooo_sll_before_and = 0;
+        ooo_issues         = 0;
+        max_issued_pc      = 0;
         and_x14_done       = 0;
         pass_cnt           = 0;
         fail_cnt           = 0;
@@ -211,6 +223,17 @@ module tb_ooo_corner_cases;
                 and_x14_done <= 1'b1;
             if (dut.cdb_valid && dut.cdb_data == 32'd22 && !and_x14_done)
                 ooo_sll_before_and <= 1;
+            // An instruction issued although a younger one (higher PC; the only
+            // taken branch goes forward) was issued earlier: out-of-order issue
+            if (dut.rob_flush_out)
+                max_issued_pc <= 0;
+            else if (dut.iq_issue_valid) begin
+                if (dut.iq_pc < max_issued_pc) begin
+                    ooo_issues <= ooo_issues + 1;
+                    $display("[T=%0t] OoO: pc=0x%02h issued after younger pc=0x%02h", $time, dut.iq_pc, max_issued_pc);
+                end else
+                    max_issued_pc <= dut.iq_pc;
+            end
             if (dut.rob_commit_valid)
                 commit_count <= commit_count + 1;
             if (dut.rob_flush_out)
@@ -251,12 +274,12 @@ module tb_ooo_corner_cases;
 
         $display("");
         $display("================================================================================");
-        $display(" ARCHITECTURAL REGISTER FILE VERIFICATION (x0 .. x20)");
+        $display(" ARCHITECTURAL REGISTER FILE VERIFICATION (x0 .. x23)");
         $display("================================================================================");
         $display(" Reg | Expected   | Actual     | Corner Case Verified                          | Status");
         $display(" ----+------------+------------+-----------------------------------------------+-------");
 
-        for (r = 0; r <= 20; r = r + 1) begin
+        for (r = 0; r <= 23; r = r + 1) begin
             act = (r == 0) ? dut.u_regfile.regs[0] : `ARCH_REG(r);
             if (act === exp_reg[r]) begin
                 pass_cnt = pass_cnt + 1;
@@ -271,11 +294,15 @@ module tb_ooo_corner_cases;
         $display("================================================================================");
         $display(" MICROARCHITECTURAL CORNER-CASE CHECKS");
         $display("================================================================================");
-        check_cond(ooo_sll_before_and == 1,     "Out-of-Order bypass: SLL x15 executed before older AND x14");
+        // (With the wakeup bypass the AND is ready in time and goes first, so
+        // the original check "SLL x15 before older AND x14" no longer applies;
+        // the order is checked for the whole program instead, and
+        // Category 9 does the same behind a load.)
+        check_cond(ooo_issues >= 1,             "Out-of-order issue: a younger instruction overtook a waiting one");
         check_cond(dmem[2] === 32'd22,          "Store commit: SW x15, 8(x0) wrote 22 to Data Memory[2]");
         check_cond(flush_count == 1,            "Branch prediction: Taken BEQ triggered exactly 1 ROB flush");
         check_cond(`ARCH_REG(18) === 32'd25,    "Speculative recovery: Flushed ADDI x18, 999 rolled back");
-        check_cond(commit_count == 26,          "ROB wrap-around: All 26 non-flushed instructions committed");
+        check_cond(commit_count == 29,          "ROB wrap-around: All 29 non-flushed instructions committed");
 
         $display("--------------------------------------------------------------------------------");
         $display(" TOTAL: %0d PASSED, %0d FAILED", pass_cnt, fail_cnt);

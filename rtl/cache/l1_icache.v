@@ -7,8 +7,9 @@
 // valid bits are a reset flip-flop vector.
 //
 // Lookup is pipelined, one instruction per cycle on hits. Every cycle the
-// cache looks up the address the core will ask for next: cpu_addr + 4 when it
-// is delivering an instruction this cycle, otherwise cpu_addr itself. The
+// cache looks up the address the core will ask for next: cpu_next_addr (the
+// core's predicted next PC, which may be a branch target) when it is
+// delivering an instruction this cycle, otherwise cpu_addr itself. The
 // next cycle it delivers that instruction if the core is indeed asking for
 // that address. After a redirect (branch, trap) the address does not match,
 // nothing is delivered for one cycle, and the lookup restarts at the new PC.
@@ -27,6 +28,7 @@ module l1_icache (
 
     // CPU interface
     input  wire [31:0] cpu_addr,
+    input  wire [31:0] cpu_next_addr, // the PC the core moves to if this one is delivered
     output wire [31:0] cpu_rdata,
     input  wire        cpu_req,
     output wire        cpu_ack,
@@ -74,7 +76,7 @@ module l1_icache (
     wire fill_we = (state == FETCH) && mem_ack;
 
     // Next lookup address
-    wire [31:0]          la       = cpu_ack ? (cpu_addr + 32'd4) : cpu_addr;
+    wire [31:0]          la       = cpu_ack ? cpu_next_addr : cpu_addr;
     wire [IDX_WIDTH-1:0] la_index = la[IDX_WIDTH+OFF_WIDTH-1:OFF_WIDTH];
     wire [TAG_WIDTH-1:0] la_tag   = la[31:IDX_WIDTH+OFF_WIDTH];
     wire                 la_hit   = valid[la_index] && (tag_array[la_index] == la_tag);

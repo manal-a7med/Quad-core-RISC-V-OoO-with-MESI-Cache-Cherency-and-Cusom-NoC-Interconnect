@@ -1,0 +1,15 @@
+# riscv-tests benchmarks on the 4-core SoC (make bench), after P4:
+# 1 instruction/cycle fetch, branch prediction, loads not freezing issue, wakeup bypass,
+# back-to-back cache accesses, RV32M. rv32ima_zicsr, gcc 13.2 -O2; RTL of the commit that added this file
+# <bench> <result> cycles=<whole run> region=<timed region> instret=<instructions in the region>
+#   branches/mispredicts: hart 0, whole run; busupgr/bustx: BusUpgr and all bus transactions of the four L1D
+dhrystone PASS cycles=401089 region=377649 instret=277029 branches=65816 mispredicts=1549 busupgr=0 bustx=579
+median PASS cycles=30331 region=11093 instret=4251 branches=3719 mispredicts=1263 busupgr=0 bustx=166
+multiply PASS cycles=55476 region=25335 instret=20897 branches=13721 mispredicts=1279 busupgr=0 bustx=60
+qsort PASS cycles=383174 region=236451 instret=123504 branches=68265 mispredicts=10683 busupgr=0 bustx=2660
+rsort PASS cycles=718167 region=328999 instret=171130 branches=21729 mispredicts=68 busupgr=0 bustx=29284
+towers PASS cycles=17468 region=6896 instret=3751 branches=771 mispredicts=159 busupgr=0 bustx=17
+vvadd PASS cycles=13411 region=3139 instret=2413 branches=1214 mispredicts=28 busupgr=0 bustx=182
+memcpy PASS cycles=299559 region=126642 instret=80021 branches=38179 mispredicts=28 busupgr=0 bustx=4021
+mt-vvadd PASS cycles=218237 region=89134 instret=- branches=31522 mispredicts=610 busupgr=687 bustx=9022
+mt-matmul PASS cycles=23874 region=13698 instret=- branches=1534 mispredicts=187 busupgr=2 bustx=551

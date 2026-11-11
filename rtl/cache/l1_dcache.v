@@ -327,7 +327,14 @@ module l1_dcache (
             ST_ALLOCATE:
                 if (bus_ack) begin
                     c_st_we = 1'b1; lru_we = 1'b1;
+`ifdef CFG_MSI
+                    // Measurement build (scripts/ablation.sh): MSI, a line read
+                    // with no other holder is Shared, so a later store needs
+                    // a BusUpgr
+                    c_st_val = wr_eff ? M : S;
+`else
                     c_st_val = wr_eff ? M : ((bus_shared === 1'b1) ? S : E);
+`endif
                 end
             ST_UPGRADE:
                 if (bus_ack) begin c_st_we = 1'b1; lru_we = 1'b1; c_st_val = M; end

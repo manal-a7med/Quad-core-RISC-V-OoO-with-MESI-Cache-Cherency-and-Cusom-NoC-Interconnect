@@ -68,7 +68,6 @@ module load_store_unit (
     reg        lsq_committed  [0:DEPTH-1]; // Stores: ready to write cache
     reg [3:0]  lsq_amo        [0:DEPTH-1]; // Atomics: AMO code (always go to the cache)
 
-    reg [4:0]  count;
     reg [3:0]  free_slot;
     reg        free_found;
     reg        free_two;                   // at least two free slots
@@ -98,21 +97,25 @@ module load_store_unit (
     // ========================================================================
     // FSM for cache access
     // ========================================================================
-    localparam [2:0]
-        LSQ_IDLE      = 3'b000,
-        LSQ_LOAD_REQ  = 3'b001,
-        LSQ_LOAD_WAIT = 3'b010,
-        LSQ_STORE_REQ = 3'b011,
-        LSQ_STORE_WAIT= 3'b100;
+    // One access is at the cache at a time. When it is answered the next one
+    // is sent in the same cycle, so the cache sees requests back to back.
+    localparam [1:0]
+        LSQ_IDLE  = 2'd0,
+        LSQ_LOAD  = 2'd1,     // a load (or atomic) is at the cache
+        LSQ_STORE = 2'd2;     // a committed store is at the cache
 
-    reg [2:0]  lsq_state;
+    reg [1:0]  lsq_state;
+    wire       ld_done    = (lsq_state == LSQ_LOAD)  && dcache_ack;
+    wire       st_done    = (lsq_state == LSQ_STORE) && dcache_ack;
+    wire       can_launch = (lsq_state == LSQ_IDLE) || ld_done || st_done;
     reg [3:0]  active_idx;
 
     // Results waiting for the core: one holder for loads answered by the
     // cache and one for forwarded loads, so neither overwrites the other.
     // (The cache path cannot produce a second result before the first is
-    // taken: the core takes a result within two cycles, and the next cache
-    // access needs three.)
+    // taken: the core takes a result at the latest in the cycle after it
+    // appears, and the next access is answered two cycles after this one at
+    // the earliest. A simulation check below guards that.)
     reg        ld_res_valid, fw_res_valid;
     reg [31:0] ld_res_data,  fw_res_data;
     reg [5:0]  ld_res_phys,  fw_res_phys;
@@ -121,7 +124,6 @@ module load_store_unit (
     assign result_data    = ld_res_valid ? ld_res_data : fw_res_data;
     assign result_phys_rd = ld_res_valid ? ld_res_phys : fw_res_phys;
     assign result_rob_idx = ld_res_valid ? ld_res_rob  : fw_res_rob;
-    reg        active_squashed;  // in-flight load was flushed: drop its result
 
     // ========================================================================
     // Byte-accurate, age-aware store-to-load forwarding
@@ -197,6 +199,11 @@ module load_store_unit (
     // waiting to be written to the cache, or while an older load of any of
     // the same bytes has not been performed yet (loads of the same bytes are
     // performed in program order: RVWMO, CoRR).
+    // The entry whose access is answered this cycle has been performed and
+    // blocks nothing any more. (Not if it was a squashed load: its slot may
+    // already hold a new entry.)
+    reg        active_squashed;  // in-flight load was flushed: drop its result
+    wire       done_now = st_done || (ld_done && !active_squashed);
     reg        ld_blocked [0:DEPTH-1];
     integer    bi, bj;
     always @(*) begin
@@ -204,6 +211,7 @@ module load_store_unit (
             ld_blocked[bi] = 1'b0;
             for (bj = 0; bj < DEPTH; bj = bj + 1) begin
                 if (lsq_valid[bj] && (lsq_is_store[bj] || lsq_is_load[bj]) && !lsq_completed[bj] &&
+                    !(done_now && bj[3:0] == active_idx) &&
                     store_older(lsq_committed[bj], lsq_rob_idx[bj], lsq_rob_idx[bi], rob_head) &&
                     lsq_addr[bj][31:2] == lsq_addr[bi][31:2] &&
                     |(byte_mask(lsq_mem_type[bj], lsq_addr[bj][1:0]) &
@@ -239,12 +247,14 @@ module load_store_unit (
         uncomm_store_found = 1'b0;
         uncomm_store_idx   = 4'd0;
         // Committed stores are written in commit (program) order: oldest first
-        if (sq_count != 4'd0) begin
-            next_store_idx   = sq_fifo[sq_head];
+        // (not counting the one being answered this cycle)
+        if (sq_count != (st_done ? 4'd1 : 4'd0)) begin
+            next_store_idx   = sq_fifo[st_done ? sq_head + 3'd1 : sq_head];
             next_store_found = 1'b1;
         end
         for (nl_i = 0; nl_i < DEPTH; nl_i = nl_i + 1) begin
-            if (lsq_valid[nl_i] && lsq_is_load[nl_i] && !lsq_completed[nl_i] && !ld_blocked[nl_i] && !next_load_found) begin
+            if (lsq_valid[nl_i] && lsq_is_load[nl_i] && !lsq_completed[nl_i] && !ld_blocked[nl_i] &&
+                !(ld_done && nl_i[3:0] == active_idx) && !next_load_found) begin
                 next_load_idx   = nl_i[3:0];
                 next_load_found = 1'b1;
             end
@@ -265,12 +275,19 @@ module load_store_unit (
     // result is still waiting there, this load takes a queue slot instead and
     // reads the cache once the store has been written.
     wire fwd_use  = is_load && fwd_found && (amo_op == `AMO_NONE) && !fw_res_valid;
-    wire do_alloc = enqueue_en && !lsq_full && free_found && !fwd_use;
-    wire do_free  = ((lsq_state == LSQ_LOAD_WAIT) || (lsq_state == LSQ_STORE_WAIT)) && dcache_ack;
+    // A load arriving from the issue queue goes to the cache at once when
+    // nothing is waiting and no older load or store in the queue overlaps it
+    // (it is written to its slot as usual and completed from there).
+    wire direct_load = enqueue_en && !lsq_full && is_load && !fwd_use && (fwd_hits == 3'd0);
+
+`ifdef SIM
+    always @(posedge clk)
+        if (rst_n && ld_done && !active_squashed && !flush && ld_res_valid && !result_accept)
+            $display("ERROR load_store_unit: load result overwritten before the core took it");
+`endif
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            count        <= 5'd0;
             lsq_state    <= LSQ_IDLE;
             dcache_req   <= 1'b0;
             dcache_wr    <= 1'b0;
@@ -299,7 +316,7 @@ module load_store_unit (
             // A load already sent to the cache must finish its handshake, but
             // its result belongs to a squashed instruction and must not reach
             // the CDB (its physical register may already be reallocated).
-            if (lsq_state == LSQ_LOAD_REQ || lsq_state == LSQ_LOAD_WAIT)
+            if (lsq_state == LSQ_LOAD)
                 active_squashed <= 1'b1;
             for (k = 0; k < DEPTH; k = k + 1) begin
                 if (!lsq_committed[k]) begin
@@ -350,78 +367,61 @@ module load_store_unit (
             // one-cycle acknowledge (I/O) is never missed and an access is
             // never repeated; only new loads wait until the flush is over.
             // -----------------------------------------------------------------
-            case (lsq_state)
-                LSQ_IDLE: begin
-                    dcache_req <= 1'b0;
-                    if (next_store_found) begin
-                        lsq_state       <= LSQ_STORE_REQ;
-                        active_idx      <= next_store_idx;
-                        dcache_addr     <= lsq_addr[next_store_idx];
-                        dcache_wdata    <= lsq_data[next_store_idx];
-                        dcache_req      <= 1'b1;
-                        dcache_wr       <= 1'b1;
-                        dcache_mem_type <= lsq_mem_type[next_store_idx];
-                        dcache_amo      <= `AMO_NONE;
-                    end else if (next_load_found && !flush) begin
-                        lsq_state       <= LSQ_LOAD_REQ;
-                        active_idx      <= next_load_idx;
-                        dcache_addr     <= lsq_addr[next_load_idx];
-                        dcache_req      <= 1'b1;
-                        dcache_wr       <= 1'b0;
-                        dcache_mem_type <= lsq_mem_type[next_load_idx];
-                        dcache_amo      <= lsq_amo[next_load_idx];
-                        dcache_wdata    <= lsq_data[next_load_idx];     // AMO operand
-                    end
+            if (ld_done) begin
+                if (!active_squashed && !flush) begin
+                    // (If squashed, the flush already freed the slot and
+                    // it may hold a new entry, so leave it alone.)
+                    lsq_completed[active_idx] <= 1'b1;
+                    lsq_valid[active_idx]     <= 1'b0;
                 end
+                ld_res_valid    <= !active_squashed && !flush;
+                active_squashed <= 1'b0;
+                ld_res_phys     <= lsq_phys_rd[active_idx];
+                ld_res_rob      <= lsq_rob_idx[active_idx];
+                ld_res_data     <= extend(lsq_mem_type[active_idx], dcache_rdata);
+            end
+            if (st_done) begin
+                lsq_completed[active_idx] <= 1'b1;
+                lsq_valid[active_idx]     <= 1'b0;
+                sq_head                   <= sq_head + 3'd1;
+            end
 
-                LSQ_LOAD_REQ: begin
-                    lsq_state <= LSQ_LOAD_WAIT;
+            if (can_launch) begin
+                if (next_store_found) begin
+                    lsq_state       <= LSQ_STORE;
+                    active_idx      <= next_store_idx;
+                    dcache_addr     <= lsq_addr[next_store_idx];
+                    dcache_wdata    <= lsq_data[next_store_idx];
+                    dcache_req      <= 1'b1;
+                    dcache_wr       <= 1'b1;
+                    dcache_mem_type <= lsq_mem_type[next_store_idx];
+                    dcache_amo      <= `AMO_NONE;
+                end else if (next_load_found && !flush) begin
+                    lsq_state       <= LSQ_LOAD;
+                    active_idx      <= next_load_idx;
+                    dcache_addr     <= lsq_addr[next_load_idx];
+                    dcache_req      <= 1'b1;
+                    dcache_wr       <= 1'b0;
+                    dcache_mem_type <= lsq_mem_type[next_load_idx];
+                    dcache_amo      <= lsq_amo[next_load_idx];
+                    dcache_wdata    <= lsq_data[next_load_idx];     // AMO operand
+                end else if (direct_load && !flush) begin
+                    lsq_state       <= LSQ_LOAD;
+                    active_idx      <= free_slot;
+                    dcache_addr     <= addr;
+                    dcache_req      <= 1'b1;
+                    dcache_wr       <= 1'b0;
+                    dcache_mem_type <= mem_type;
+                    dcache_amo      <= amo_op;
+                    dcache_wdata    <= store_data;                  // AMO operand
+                end else begin
+                    lsq_state       <= LSQ_IDLE;
+                    dcache_req      <= 1'b0;
                 end
-
-                LSQ_LOAD_WAIT: begin
-                    if (dcache_ack) begin
-                        dcache_req            <= 1'b0;
-                        lsq_state             <= LSQ_IDLE;
-                        if (!active_squashed && !flush) begin
-                            // (If squashed, the flush already freed the slot and
-                            // it may hold a new entry, so leave it alone.)
-                            lsq_completed[active_idx] <= 1'b1;
-                            lsq_valid[active_idx]     <= 1'b0;
-                        end
-
-                        ld_res_valid    <= !active_squashed && !flush;
-                        active_squashed <= 1'b0;
-                        ld_res_phys     <= lsq_phys_rd[active_idx];
-                        ld_res_rob      <= lsq_rob_idx[active_idx];
-                        ld_res_data     <= extend(lsq_mem_type[active_idx], dcache_rdata);
-                    end
-                end
-
-                LSQ_STORE_REQ: begin
-                    lsq_state <= LSQ_STORE_WAIT;
-                end
-
-                LSQ_STORE_WAIT: begin
-                    if (dcache_ack) begin
-                        dcache_req                <= 1'b0;
-                        lsq_state                 <= LSQ_IDLE;
-                        lsq_completed[active_idx] <= 1'b1;
-                        lsq_valid[active_idx]     <= 1'b0;
-                        sq_head                   <= sq_head + 3'd1;
-                    end
-                end
-
-                default: lsq_state <= LSQ_IDLE;
-            endcase
-
-            case ({do_alloc && !flush, do_free})
-                2'b10: count <= count + 5'd1;
-                2'b01: count <= count - 5'd1;
-                default: count <= count;
-            endcase
+            end
 
             case ({commit_store_en && uncomm_store_found && !flush,
-                   lsq_state == LSQ_STORE_WAIT && dcache_ack})
+                   st_done})
                 2'b10: sq_count <= sq_count + 4'd1;
                 2'b01: sq_count <= sq_count - 4'd1;
                 default: sq_count <= sq_count;

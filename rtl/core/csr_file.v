@@ -65,7 +65,7 @@ module csr_file (
         rvalid = 1'b1;
         case (raddr)
             A_MSTATUS:   rdata = mstatus;
-            A_MISA:      rdata = 32'h40000101;          // RV32IA
+            A_MISA:      rdata = 32'h40001101;          // RV32IMA
             A_MIE:       rdata = mie_r;
             A_MTVEC:     rdata = mtvec;
             A_MCOUNTINH: rdata = 32'd0;

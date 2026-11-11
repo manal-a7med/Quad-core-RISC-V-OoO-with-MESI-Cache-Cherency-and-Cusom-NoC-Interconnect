@@ -55,7 +55,7 @@ done
 # fpga_top (make synth-fpga, slow: run it first to include it).
 # The ISA programs must have been built (the rv32ui runs above do that).
 mkdir -p "$V/soc"
-for p in hello parsum atomics prodcons litmus; do
+for p in hello parsum atomics prodcons litmus memstress; do
   make -C "$ROOT" -s soc-run PROG=$p > /dev/null 2>&1 || true
   make -C "$ROOT" -s fpga-sim PROG=$p > /dev/null 2>&1 || true
   cp "$ROOT/build/sw/$p.log" "$ROOT/build/sw/$p.fpga.log" "$V/soc/" 2>/dev/null || true
@@ -70,4 +70,10 @@ rm -f "$ROOT"/build/coh_random_*.log
 make -C "$ROOT" -s coh-random > /dev/null 2>&1 || true
 cp "$ROOT"/build/coh_random_*.log "$V/coh/" 2>/dev/null || true
 sh "$ROOT/scripts/coh_mutants.sh" > "$V/coh/mutants.txt" 2>&1 || true
+# P4: benchmarks on the full design and on the builds with one feature off
+# (REUSE_PERF=1 reuses build/ablation/*.txt from an earlier make ablation)
+mkdir -p "$V/perf"
+[ -n "$REUSE_PERF" ] || sh "$ROOT/scripts/ablation.sh" "$RVT" > /dev/null 2>&1 || true
+cp "$ROOT"/build/ablation/*.txt "$V/perf/" 2>/dev/null || true
+cp "$ROOT/results/2026-11-11/bench_p3_baseline.txt" "$V/perf/p3.txt"
 echo "collected into $V"

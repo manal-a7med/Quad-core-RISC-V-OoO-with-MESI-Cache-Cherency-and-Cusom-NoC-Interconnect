@@ -42,6 +42,52 @@ module tb_soc;
              dut.core_gen[0].u_core.rob_commit_writes_rd ? dut.core_gen[0].u_core.rob_commit_arch_rd : 5'd0,
              dut.core_gen[0].u_core.rob_commit_result);
 
+  // +perf: hart 0 event counts and bus transaction counts, printed at the end of the run
+  //   branches / mispredicts  committed branches and jumps, and how many flushed
+  //   rob_full, iq_full       cycles dispatch was stalled by a full ROB / issue queue
+  //   fetch_wait              cycles the core asked for an instruction and got none
+  //   issue_idle              cycles nothing was issued although the issue queue was not empty
+  reg perf;
+  initial perf = $test$plusargs("perf");
+  integer pf_commit, pf_br, pf_misp, pf_rob_full, pf_iq_full, pf_fetch_wait, pf_issue_idle, pf_serial;
+  initial begin
+    pf_commit = 0; pf_br = 0; pf_misp = 0; pf_rob_full = 0; pf_iq_full = 0; pf_fetch_wait = 0;
+    pf_issue_idle = 0; pf_serial = 0;
+  end
+  always @(posedge clk) if (rst_n) begin
+    if (dut.core_gen[0].u_core.u_rob.do_commit) begin
+      pf_commit = pf_commit + 1;
+      if (dut.core_gen[0].u_core.u_rob.rob_is_branch[dut.core_gen[0].u_core.u_rob.head]) begin
+        pf_br = pf_br + 1;
+        if (dut.core_gen[0].u_core.u_rob.rob_mispredicted[dut.core_gen[0].u_core.u_rob.head]) pf_misp = pf_misp + 1;
+      end
+    end
+    if (dut.core_gen[0].u_core.rob_full)     pf_rob_full = pf_rob_full + 1;
+    else if (dut.core_gen[0].u_core.iq_full) pf_iq_full  = pf_iq_full + 1;
+    else if (dut.core_gen[0].u_core.serial_stall) pf_serial = pf_serial + 1;
+    if (dut.core_gen[0].u_core.icache_req && !dut.core_gen[0].u_core.icache_ack) pf_fetch_wait = pf_fetch_wait + 1;
+    if (!dut.core_gen[0].u_core.iq_issue_valid && dut.core_gen[0].u_core.u_iq.valid_count != 0) pf_issue_idle = pf_issue_idle + 1;
+  end
+  // Bus transactions of all four data caches
+  integer pf_rd, pf_rdx, pf_upgr, pf_flush;
+  initial begin pf_rd = 0; pf_rdx = 0; pf_upgr = 0; pf_flush = 0; end
+  genvar pg;
+  generate for (pg = 0; pg < 4; pg = pg + 1) begin : pstat
+    always @(posedge clk) if (rst_n && dut.core_gen[pg].u_l1d.bus_ack)
+      case (dut.core_gen[pg].u_l1d.bus_cmd)
+        `BUS_READ:  pf_rd    = pf_rd + 1;
+        `BUS_READX: pf_rdx   = pf_rdx + 1;
+        `BUS_UPGR:  pf_upgr  = pf_upgr + 1;
+        `BUS_FLUSH: pf_flush = pf_flush + 1;
+        default: ;
+      endcase
+  end endgenerate
+  task perf_report;
+    if (perf) $display("PERF bus busrd=%0d busrdx=%0d busupgr=%0d flush=%0d", pf_rd, pf_rdx, pf_upgr, pf_flush);
+    if (perf) $display("PERF hart0 cycles=%0d commits=%0d branches=%0d mispredicts=%0d rob_full=%0d iq_full=%0d serial=%0d fetch_wait=%0d issue_idle=%0d",
+                       cycles, pf_commit, pf_br, pf_misp, pf_rob_full, pf_iq_full, pf_serial, pf_fetch_wait, pf_issue_idle);
+  endtask
+
   // TOHOST detection at each core's data-cache port
   genvar g;
   generate for (g = 0; g < 4; g = g + 1) begin : mon
@@ -63,6 +109,7 @@ module tb_soc;
     forever begin
       @(posedge clk); cycles = cycles + 1;
       if (exit_valid) begin
+        perf_report;
         if (exit_value == 32'd1) $display("\nRESULT PASS cycles=%0d leds=%h hex=%h", cycles, leds, hex_value);
         else                     $display("\nRESULT FAIL exit=%0d cycles=%0d", exit_value, cycles);
         $finish;
