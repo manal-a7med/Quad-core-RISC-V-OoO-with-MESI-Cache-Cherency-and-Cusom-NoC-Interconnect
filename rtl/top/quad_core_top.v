@@ -43,6 +43,7 @@ module quad_core_top #(
     wire         dc_req    [0:3];
     wire         dc_wr     [0:3];
     wire [2:0]   dc_mtype  [0:3];
+    wire [3:0]   dc_amo    [0:3];
 
     // Uncached I/O: each core's data port goes to soc_io when addr[31] = 1
     wire [3:0]   io_req, io_wr, io_ack;
@@ -156,7 +157,8 @@ module quad_core_top #(
                 .dcache_req     (dc_req[gi]),
                 .dcache_wr      (dc_wr[gi]),
                 .dcache_ack     (d_ack),
-                .dcache_mem_type(dc_mtype[gi])
+                .dcache_mem_type(dc_mtype[gi]),
+                .dcache_amo     (dc_amo[gi])
             );
 
             // --- L1 Instruction Cache ---
@@ -186,6 +188,7 @@ module quad_core_top #(
                 .cpu_wr          (dc_wr[gi]),
                 .cpu_ack         (l1d_ack),
                 .cpu_mem_type    (dc_mtype[gi]),
+                .cpu_amo         (dc_amo[gi]),
                 .bus_addr        (bus_addr[gi]),
                 .bus_wdata       (bus_wdata[gi]),
                 .bus_rdata       (bus_rdata_bc),

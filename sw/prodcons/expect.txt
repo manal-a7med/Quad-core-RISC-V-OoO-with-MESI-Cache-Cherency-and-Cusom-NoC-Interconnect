@@ -1,0 +1,6 @@
+prodcons: hart 0 produced 200 items through a 16-slot ring
+hart 1 took
+hart 2 took
+hart 3 took
+total 200 items, sum 20100 OK, duplicates 0, missing 0
+cycles:

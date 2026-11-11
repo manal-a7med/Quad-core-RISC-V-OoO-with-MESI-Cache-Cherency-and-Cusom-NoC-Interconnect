@@ -121,7 +121,7 @@ module issue_queue (
 
     // ========================================================================
     // Find ready-to-issue entry (oldest with both operands ready)
-    // Loads wait if an older store is still in the IQ
+    // Loads wait if an older store or an older load is still in the IQ
     // ========================================================================
     reg [2:0] issue_slot;
     reg       issue_found;
@@ -147,11 +147,14 @@ module issue_queue (
         if (!issue_stall) begin
             for (ii = 0; ii < `IQ_DEPTH; ii = ii + 1) begin
                 // A load may not issue while an older store is still in the IQ
-                // (its address is unknown, so the LSQ cannot disambiguate).
+                // (its address is unknown, so the LSQ cannot disambiguate),
+                // nor while an older load is: loads reach the LSQ in program
+                // order, so two loads of the same bytes can be kept in order
+                // there (RVWMO same-address load-load rule, the CoRR test).
                 older_store_pending = 1'b0;
                 if (iq_is_load[ii]) begin
                     for (si = 0; si < `IQ_DEPTH; si = si + 1) begin
-                        if (iq_valid[si] && iq_is_store[si] &&
+                        if (iq_valid[si] && (iq_is_store[si] || iq_is_load[si]) &&
                             (rel_age(iq_rob_idx[si], rob_head) < rel_age(iq_rob_idx[ii], rob_head)))
                             older_store_pending = 1'b1;
                     end

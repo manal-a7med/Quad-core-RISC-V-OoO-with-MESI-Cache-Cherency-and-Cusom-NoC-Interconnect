@@ -1,6 +1,6 @@
 # Quad-core RISC-V OoO with MESI cache coherence
 
-A four-core RV32I (+ Zicsr, machine mode) out-of-order processor (rename,
+A four-core RV32IA (+ Zicsr, machine mode) out-of-order processor (rename,
 8-entry issue queue, 16-entry ROB, load/store queue) with private L1 caches,
 a shared L2, and MESI coherence over a snooping bus, plus a small I/O block
 (UART, LEDs, 7-segment display). A 2x2 mesh NoC with directory coherence
@@ -20,12 +20,19 @@ With a RISC-V GCC (`sudo apt-get install gcc-riscv64-unknown-elf`) and a
 [riscv-tests](https://github.com/riscv-software-src/riscv-tests) checkout:
 
 ```
-make isa RISCV_TESTS=../riscv-tests   # rv32ui + system tests on one core
+make isa RISCV_TESTS=../riscv-tests   # rv32ui + rv32ua + system tests on one core
 make soc-isa                          # the same programs on the 4-core SoC
 make soc-run PROG=hello               # C demo on the SoC: "hello from hart N"
 make soc-run PROG=parsum              # 4-hart parallel array sum
+make soc-run PROG=atomics             # shared counter: plain vs amoadd vs LR/SC lock
+make soc-run PROG=prodcons            # producer/consumer ring buffer (fences + CAS)
+make soc-run PROG=litmus              # memory-model litmus tests (MP, SB, CoRR, LB, IRIW)
 make fpga-sim PROG=hello              # board-level simulation of fpga_top
 ```
+
+`make coh-random` (no RISC-V GCC needed) drives random loads, stores and
+atomics into the four L1 data caches of the real memory system and checks
+every result for coherence (3 seeds by default; `SEEDS="1 2" OPS=5000`).
 
 ## FPGA (Digilent Nexys A7-100T)
 
@@ -58,7 +65,7 @@ paths, e.g. `make IVERILOG=C:/iverilog/bin/iverilog.exe VVP=C:/iverilog/bin/vvp.
 | `rtl/top` | `quad_core_top`, `fpga_top` |
 | `sw` | Bare-metal C demos and start-up code |
 | `tb` | Testbenches and test programs |
-| `verif` | riscv-tests harness, system tests, SoC and board-level testbenches |
+| `verif` | riscv-tests harness, system tests, SoC and board-level testbenches, random coherence test |
 | `review` | Bug reproduction testbench from the design review |
 | `docs` | Reports, diagrams, and `docs/plan/` (roadmap and strategy) |
 | `synth` | Nexys A7 constraints, Vivado build and program scripts |
