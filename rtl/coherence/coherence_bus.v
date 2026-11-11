@@ -118,7 +118,7 @@ module coherence_bus (
         end
     end
 
-`ifdef SIM
+`ifdef BUS_DEBUG   // +define+BUS_DEBUG for a transaction log
     always @(posedge clk) begin
         if (sc_req_valid) $display("[Coherence Bus] Muxed req from core %0d, addr: %h", sc_req_core_id, sc_req_addr);
     end

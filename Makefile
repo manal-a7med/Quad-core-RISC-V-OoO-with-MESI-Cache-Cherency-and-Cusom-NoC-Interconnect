@@ -3,7 +3,8 @@
 # =============================================================================
 #   make sim         Run all RTL testbenches (fails if any check fails)
 #   make sim-<name>  Run one testbench (mesi arbiter cache core dep corner quad repro)
-#   make isa         rv32ui riscv-tests on the core (RISCV_TESTS=<checkout>)
+#   make isa         rv32ui riscv-tests + system tests on one core (RISCV_TESTS=<checkout>)
+#   make soc-isa     the same programs on the full 4-core SoC with caches (after make isa)
 #   make lint        Verilator lint of the core (errors fail; warnings listed)
 #   make lint-soc    Verilator lint of quad_core_top (passes once P2 removes array resets)
 #   make synth       Yosys generic synthesis of one core (fast check, used by CI)
@@ -39,7 +40,7 @@ SOC_RTL   = $(CORE_RTL) $(CACHE_RTL) $(COH_RTL) $(MEM_RTL) rtl/top/quad_core_top
 
 TESTS = mesi arbiter cache core dep corner quad
 
-.PHONY: all sim $(addprefix sim-,$(TESTS)) sim-repro isa synth lint lint-soc synth-soc synth-fpga results animate gui clean help
+.PHONY: all sim $(addprefix sim-,$(TESTS)) sim-repro isa synth soc-isa lint lint-soc synth-soc synth-fpga results animate gui clean help
 
 all: sim
 
@@ -91,6 +92,9 @@ lint: | $(OUT_DIR)
 lint-soc: | $(OUT_DIR)
 	$(LINT) --top-module quad_core_top $(SOC_RTL) > $(OUT_DIR)/lint_soc.log 2>&1 || true
 	@! grep "^%Error" $(OUT_DIR)/lint_soc.log
+
+soc-isa:
+	sh scripts/soc_isa.sh
 
 synth: | $(OUT_DIR)
 	$(YOSYS) -q -l $(OUT_DIR)/synth.log -p "read_verilog -DSYNTHESIS -I rtl/core $(CORE_RTL); synth -top riscv_ooo_core; stat"

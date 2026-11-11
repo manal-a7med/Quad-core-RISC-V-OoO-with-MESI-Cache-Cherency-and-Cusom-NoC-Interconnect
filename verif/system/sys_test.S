@@ -7,11 +7,14 @@
         .section .text.init
         .globl _start
 _start:
-        li   gp, 0
+        csrr t0, mhartid
+        beqz t0, 1f
+park:   j    park
+1:      li   gp, 0
         la   t0, handler
         csrw mtvec, t0
 
-        # 1: mhartid of core 0 is 0
+        # 1: hart 0 runs this test (the env parks the others)
         csrr t1, mhartid
         FAIL_IF_NE(t1, x0, 1)
 
