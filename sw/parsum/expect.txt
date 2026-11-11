@@ -1,0 +1,5 @@
+hart 0: partial=0x0001ff00
+hart 1: partial=0x0005ff00
+hart 2: partial=0x0009ff00
+hart 3: partial=0x000dff00
+total=0x001ffc00 OK

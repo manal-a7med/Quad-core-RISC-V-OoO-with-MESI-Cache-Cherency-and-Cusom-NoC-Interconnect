@@ -10,13 +10,22 @@
 `include "mesi_defines.vh"
 `include "common_defs.vh"
 
-module quad_core_top (
+module quad_core_top #(
+    parameter integer UART_CLKS_PER_BIT = 434   // 50 MHz / 115200 baud
+) (
     input  wire        clk,
     input  wire        rst_n,
 
     // Debug / Status outputs
     output wire [3:0]  core_active,     // Which cores are running
-    output wire        mem_busy         // Memory controller busy
+    output wire        mem_busy,        // Memory controller busy
+
+    // Memory-mapped I/O (addresses with bit 31 set, see rtl/io/soc_io.v)
+    output wire        uart_txd,
+    output wire [15:0] leds,
+    output wire [31:0] hex_value,
+    output wire [31:0] exit_value,
+    output wire        exit_valid
 );
 
     // ========================================================================
@@ -31,11 +40,14 @@ module quad_core_top (
     // D-Cache: core ↔ L1D
     wire [31:0]  dc_addr   [0:3];
     wire [31:0]  dc_wdata  [0:3];
-    wire [31:0]  dc_rdata  [0:3];
     wire         dc_req    [0:3];
     wire         dc_wr     [0:3];
-    wire         dc_ack    [0:3];
     wire [2:0]   dc_mtype  [0:3];
+
+    // Uncached I/O: each core's data port goes to soc_io when addr[31] = 1
+    wire [3:0]   io_req, io_wr, io_ack;
+    wire [127:0] io_addr, io_wdata;
+    wire [31:0]  io_rdata;
 
     // Bus interface: L1D ↔ coherence bus
     wire         bus_req   [0:3];
@@ -119,6 +131,16 @@ module quad_core_top (
     generate
         for (gi = 0; gi < 4; gi = gi + 1) begin : core_gen
 
+            wire        io_sel = dc_addr[gi][31];
+            wire        l1d_ack;
+            wire [31:0] l1d_rdata;
+            wire        d_ack   = io_sel ? io_ack[gi] : l1d_ack;
+            wire [31:0] d_rdata = io_sel ? io_rdata   : l1d_rdata;
+            assign io_req[gi]              = dc_req[gi] && io_sel;
+            assign io_wr[gi]               = dc_wr[gi];
+            assign io_addr[gi*32 +: 32]    = dc_addr[gi];
+            assign io_wdata[gi*32 +: 32]   = dc_wdata[gi];
+
             // --- OoO Core ---
             riscv_ooo_core u_core (
                 .clk            (clk),
@@ -130,10 +152,10 @@ module quad_core_top (
                 .icache_ack     (ic_ack[gi]),
                 .dcache_addr    (dc_addr[gi]),
                 .dcache_wdata   (dc_wdata[gi]),
-                .dcache_rdata   (dc_rdata[gi]),
+                .dcache_rdata   (d_rdata),
                 .dcache_req     (dc_req[gi]),
                 .dcache_wr      (dc_wr[gi]),
-                .dcache_ack     (dc_ack[gi]),
+                .dcache_ack     (d_ack),
                 .dcache_mem_type(dc_mtype[gi])
             );
 
@@ -159,10 +181,10 @@ module quad_core_top (
                 .rst_n           (rst_n),
                 .cpu_addr        (dc_addr[gi]),
                 .cpu_wdata       (dc_wdata[gi]),
-                .cpu_rdata       (dc_rdata[gi]),
-                .cpu_req         (dc_req[gi]),
+                .cpu_rdata       (l1d_rdata),
+                .cpu_req         (dc_req[gi] && !io_sel),
                 .cpu_wr          (dc_wr[gi]),
-                .cpu_ack         (dc_ack[gi]),
+                .cpu_ack         (l1d_ack),
                 .cpu_mem_type    (dc_mtype[gi]),
                 .bus_addr        (bus_addr[gi]),
                 .bus_wdata       (bus_wdata[gi]),
@@ -183,6 +205,25 @@ module quad_core_top (
             assign core_active[gi] = 1'b1;
         end
     endgenerate
+
+    // ========================================================================
+    // Memory-mapped I/O: UART, LEDs, 7-segment value, exit register
+    // ========================================================================
+    soc_io #(.CLKS_PER_BIT(UART_CLKS_PER_BIT)) u_io (
+        .clk       (clk),
+        .rst_n     (rst_n),
+        .req       (io_req),
+        .wr        (io_wr),
+        .addr      (io_addr),
+        .wdata     (io_wdata),
+        .ack       (io_ack),
+        .rdata     (io_rdata),
+        .uart_txd  (uart_txd),
+        .leds      (leds),
+        .hex_value (hex_value),
+        .exit_value(exit_value),
+        .exit_valid(exit_valid)
+    );
 
     // ========================================================================
     // Coherence Bus Interconnect

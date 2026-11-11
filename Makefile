@@ -5,6 +5,8 @@
 #   make sim-<name>  Run one testbench (mesi arbiter cache core dep corner quad repro)
 #   make isa         rv32ui riscv-tests + system tests on one core (RISCV_TESTS=<checkout>)
 #   make soc-isa     the same programs on the full 4-core SoC with caches (after make isa)
+#   make sw          Build the demo programs in sw/ (hello, parsum) to build/sw/
+#   make soc-run PROG=hello   Run a demo program on the full SoC (UART printed)
 #   make lint        Verilator lint of the core (errors fail; warnings listed)
 #   make lint-soc    Verilator lint of quad_core_top (passes once P2 removes array resets)
 #   make synth       Yosys generic synthesis of one core (fast check, used by CI)
@@ -36,11 +38,12 @@ CORE_RTL  = $(sort $(wildcard rtl/core/*.v))
 CACHE_RTL = $(sort $(filter-out rtl/cache/cache_controller.v,$(wildcard rtl/cache/*.v)))
 COH_RTL   = $(sort $(filter-out rtl/coherence/mesi_protocol.v,$(wildcard rtl/coherence/*.v)))
 MEM_RTL   = $(sort $(wildcard rtl/memory/*.v))
-SOC_RTL   = $(CORE_RTL) $(CACHE_RTL) $(COH_RTL) $(MEM_RTL) rtl/top/quad_core_top.v
+IO_RTL    = $(sort $(wildcard rtl/io/*.v))
+SOC_RTL   = $(CORE_RTL) $(CACHE_RTL) $(COH_RTL) $(MEM_RTL) $(IO_RTL) rtl/top/quad_core_top.v
 
 TESTS = mesi arbiter cache core dep corner quad
 
-.PHONY: all sim $(addprefix sim-,$(TESTS)) sim-repro isa synth soc-isa lint lint-soc synth-soc synth-fpga results animate gui clean help
+.PHONY: all sim $(addprefix sim-,$(TESTS)) sim-repro isa synth soc-isa sw soc-run lint lint-soc synth-soc synth-fpga results animate gui clean help
 
 all: sim
 
@@ -95,6 +98,35 @@ lint-soc: | $(OUT_DIR)
 
 soc-isa:
 	sh scripts/soc_isa.sh
+
+# Demo programs (C, bare metal, all four harts). Each builds to
+#   build/sw/<prog>.hex       one 32-bit word per line (simulation)
+#   build/sw/<prog>.line.hex  one 256-bit line per line (FPGA memory image)
+RV_CC      ?= riscv64-unknown-elf-gcc
+RV_OBJCOPY ?= riscv64-unknown-elf-objcopy
+RV_OBJDUMP ?= riscv64-unknown-elf-objdump
+RV_CFLAGS   = -march=rv32i_zicsr -mabi=ilp32 -O2 -ffreestanding -fno-builtin -nostdlib -nostartfiles \
+              -Wl,--no-warn-rwx-segments -Isw/common -T sw/common/link.ld
+SW_PROGS    = $(notdir $(filter-out sw/common,$(wildcard sw/*)))
+PROG       ?= hello
+
+sw: $(foreach p,$(SW_PROGS),$(OUT_DIR)/sw/$(p).line.hex)
+
+$(OUT_DIR)/sw/%.line.hex: sw/%/*.c sw/common/*
+	@mkdir -p $(OUT_DIR)/sw
+	$(RV_CC) $(RV_CFLAGS) sw/common/crt0.S sw/$*/*.c -lgcc -o $(OUT_DIR)/sw/$*.elf
+	$(RV_OBJDUMP) -d $(OUT_DIR)/sw/$*.elf > $(OUT_DIR)/sw/$*.dis
+	$(RV_OBJCOPY) -O binary $(OUT_DIR)/sw/$*.elf $(OUT_DIR)/sw/$*.bin
+	od -An -v -tx4 -w4 $(OUT_DIR)/sw/$*.bin | tr -d ' ' > $(OUT_DIR)/sw/$*.hex
+	$(PYTHON) scripts/hex2line.py $(OUT_DIR)/sw/$*.hex $@
+
+$(OUT_DIR)/soc.vvp: $(SOC_RTL) verif/soc/tb_soc.v | $(OUT_DIR)
+	$(IVERILOG) $(INC_FLAGS) -o $@ $(SOC_RTL) verif/soc/tb_soc.v
+
+soc-run: $(OUT_DIR)/sw/$(PROG).line.hex $(OUT_DIR)/soc.vvp
+	$(VVP) -n $(OUT_DIR)/soc.vvp +hex=$(OUT_DIR)/sw/$(PROG).hex | tee $(OUT_DIR)/sw/$(PROG).log
+	@grep -q "RESULT PASS" $(OUT_DIR)/sw/$(PROG).log
+	@if [ -f sw/$(PROG)/expect.txt ]; then $(PYTHON) scripts/check_uart.py sw/$(PROG)/expect.txt $(OUT_DIR)/sw/$(PROG).log; fi
 
 synth: | $(OUT_DIR)
 	$(YOSYS) -q -l $(OUT_DIR)/synth.log -p "read_verilog -DSYNTHESIS -I rtl/core $(CORE_RTL); synth -top riscv_ooo_core; stat"

@@ -31,6 +31,8 @@ jobs:
         run: git clone --depth 1 https://github.com/riscv-software-src/riscv-tests.git ../riscv-tests
       - name: rv32ui compliance
         run: make isa
+      - name: Demo programs on the 4-core SoC (UART output checked)
+        run: make soc-run PROG=hello && make soc-run PROG=parsum
       - uses: actions/upload-artifact@v4
         if: always()
         with:
