@@ -23,6 +23,7 @@ module reorder_buffer (
     input  wire        alloc_is_branch,
     input  wire        alloc_is_store,
     input  wire        alloc_is_load,
+    input  wire        alloc_trap,     // ECALL/EBREAK/MRET/illegal: done, traps at commit
     output wire [3:0]  alloc_idx,      // ROB index assigned
     output wire [3:0]  head_idx,       // oldest in-flight entry (age reference)
     output wire        rob_full,
@@ -47,6 +48,9 @@ module reorder_buffer (
 
     // Flush interface
     output reg         flush_out,
+    output reg         trap_commit,    // pulse: the head entry trapped (or MRET)
+    input  wire [31:0] trap_target,    // mtvec, or mepc for MRET
+    output wire        empty,
     output reg  [31:0] flush_redirect_pc,
     input  wire        flush_in        // External flush signal
 );
@@ -80,6 +84,7 @@ module reorder_buffer (
     assign head_idx  = head;
 
     wire rob_empty = (count == 0);
+    assign empty   = rob_empty;
 
     // ========================================================================
     // Main Logic
@@ -95,6 +100,7 @@ module reorder_buffer (
             count <= 5'd0;
             commit_valid    <= 1'b0;
             flush_out       <= 1'b0;
+            trap_commit     <= 1'b0;
             flush_redirect_pc <= 32'd0;
             for (k = 0; k < `ROB_DEPTH; k = k + 1) begin
                 rob_valid[k]        <= 1'b0;
@@ -108,6 +114,7 @@ module reorder_buffer (
             count <= 5'd0;
             commit_valid    <= 1'b0;
             flush_out       <= 1'b0;
+            trap_commit     <= 1'b0;
             flush_redirect_pc <= 32'd0;
             for (k = 0; k < `ROB_DEPTH; k = k + 1) begin
                 rob_valid[k]        <= 1'b0;
@@ -118,13 +125,14 @@ module reorder_buffer (
         end else begin
             commit_valid <= 1'b0;
             flush_out    <= 1'b0;
+            trap_commit  <= 1'b0;
 
             // -----------------------------------------------------------------
             // Allocate: add new entry at tail
             // -----------------------------------------------------------------
             if (do_alloc) begin
                 rob_valid[tail]       <= 1'b1;
-                rob_done[tail]        <= 1'b0;
+                rob_done[tail]        <= alloc_trap;
                 rob_pc[tail]          <= alloc_pc;
                 rob_phys_rd[tail]     <= alloc_phys_rd;
                 rob_arch_rd[tail]     <= alloc_arch_rd;
@@ -134,7 +142,7 @@ module reorder_buffer (
                 rob_is_store[tail]    <= alloc_is_store;
                 rob_is_load[tail]     <= alloc_is_load;
                 rob_mispredicted[tail]<= 1'b0;
-                rob_exception[tail]   <= 1'b0;
+                rob_exception[tail]   <= alloc_trap;
                 rob_result[tail]      <= 32'd0;
                 tail  <= (tail + 1) & (`ROB_DEPTH - 1);
             end
@@ -181,7 +189,8 @@ module reorder_buffer (
             end else if (do_commit && rob_exception[head]) begin
                 // Exception: flush pipeline
                 flush_out         <= 1'b1;
-                flush_redirect_pc <= rob_pc[head];
+                flush_redirect_pc <= trap_target;
+                trap_commit       <= 1'b1;
                 for (k = 0; k < `ROB_DEPTH; k = k + 1) begin
                     rob_valid[k]        <= 1'b0;
                     rob_done[k]         <= 1'b0;

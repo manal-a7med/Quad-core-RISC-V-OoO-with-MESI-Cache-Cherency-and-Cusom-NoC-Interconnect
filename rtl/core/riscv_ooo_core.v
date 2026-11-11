@@ -52,8 +52,11 @@ module riscv_ooo_core (
     wire [1:0]  dec_fu_type;
     wire [2:0]  dec_mem_type;
     wire        dec_is_branch, dec_is_load, dec_is_store, dec_is_jump;
-    wire        dec_uses_rs1, dec_uses_rs2, dec_writes_rd;
+    wire        dec_uses_rs1, dec_uses_rs2;
     wire        dec_illegal, dec_valid;
+    wire        dec_writes_rd_raw;
+    wire        dec_is_csr, dec_csr_uimm, dec_is_ecall, dec_is_ebreak, dec_is_mret;
+    wire [1:0]  dec_csr_op;
 
     // --- Rename outputs ---
     wire [5:0]  ren_phys_rs1, ren_phys_rs2, ren_phys_rd_new, ren_phys_rd_old;
@@ -117,8 +120,97 @@ module riscv_ooo_core (
     wire        cdb_mispredicted;
     wire [31:0] cdb_branch_target;
 
+    // ========================================================================
+    // System instructions: CSR access, ECALL/EBREAK/MRET, illegal instructions
+    // ========================================================================
+    // These are serialized: one dispatches only when the ROB is empty, and
+    // nothing dispatches behind it until it retires (or traps). That makes CSR
+    // reads/writes non-speculative and gives precise traps with little logic.
+    wire        rob_empty;
+    wire        rob_trap_commit;
+    wire [31:0] csr_rdata, csr_mtvec, csr_mepc;
+    wire        csr_rvalid, csr_rreadonly;
+
+    wire [11:0] csr_addr   = dec_imm[11:0];
+    wire        csr_src_x0 = (dec_rs1 == 5'd0);           // RS/RC with x0/0 do not write
+    wire        csr_writes = (dec_csr_op == 2'b01) || !csr_src_x0;
+    wire        csr_bad    = dec_is_csr && (!csr_rvalid || (csr_rreadonly && csr_writes));
+    wire        dec_trap   = dec_valid && (dec_illegal || dec_is_ecall || dec_is_ebreak ||
+                                           dec_is_mret || csr_bad);
+    wire        dec_serial = dec_valid && (dec_trap || dec_is_csr);
+    wire        dec_writes_rd = dec_writes_rd_raw && !dec_trap;
+
+    reg         ser_busy;           // a serialized instruction is in flight
+    reg         trap_is_mret;
+    reg  [31:0] trap_cause, trap_pc, trap_tval;
+    wire        serial_stall = dec_valid && (ser_busy || (dec_serial && !rob_empty));
+
+    // CSR execution (at dispatch; result written to the CDB next cycle)
+    wire [31:0] csr_src  = dec_csr_uimm ? {27'd0, dec_rs1} : rf_rs1_data;
+    reg  [31:0] csr_new;
+    always @(*) begin
+        case (dec_csr_op)
+            2'b01:   csr_new = csr_src;
+            2'b10:   csr_new = csr_rdata | csr_src;
+            default: csr_new = csr_rdata & ~csr_src;
+        endcase
+    end
+    wire        csr_exec = dispatch_en && dec_is_csr && !dec_trap;
+    reg         csr_wb_valid, csr_wb_writes;
+    reg  [31:0] csr_wb_data;
+    reg  [5:0]  csr_wb_phys;
+    reg  [3:0]  csr_wb_rob;
+
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            ser_busy <= 1'b0; csr_wb_valid <= 1'b0;
+            trap_is_mret <= 1'b0; trap_cause <= 32'd0; trap_pc <= 32'd0; trap_tval <= 32'd0;
+        end else begin
+            csr_wb_valid <= csr_exec;
+            if (csr_exec) begin
+                csr_wb_data   <= csr_rdata;
+                csr_wb_phys   <= ren_phys_rd_new;
+                csr_wb_rob    <= rob_alloc_idx;
+                csr_wb_writes <= dec_writes_rd;
+            end
+            if (pipeline_flush || rob_commit_valid)
+                ser_busy <= 1'b0;
+            if (dispatch_en && dec_serial)
+                ser_busy <= 1'b1;
+            if (dispatch_en && dec_trap) begin
+                trap_is_mret <= dec_is_mret;
+                trap_pc      <= fd_pc;
+                trap_cause   <= dec_is_ecall  ? 32'd11 :           // ECALL from M-mode
+                                dec_is_ebreak ? 32'd3  : 32'd2;    // breakpoint / illegal
+                trap_tval    <= dec_is_ebreak ? fd_pc :
+                                (dec_is_ecall || dec_is_mret) ? 32'd0 : fd_instr;
+            end
+        end
+    end
+
+    csr_file u_csr (
+        .clk         (clk),
+        .rst_n       (rst_n),
+        .hartid      (core_id),
+        .raddr       (csr_addr),
+        .rdata       (csr_rdata),
+        .rvalid      (csr_rvalid),
+        .rreadonly   (csr_rreadonly),
+        .we          (csr_exec && csr_writes),
+        .waddr       (csr_addr),
+        .wdata       (csr_new),
+        .trap_enter  (rob_trap_commit && !trap_is_mret),
+        .trap_cause  (trap_cause),
+        .trap_pc     (trap_pc),
+        .trap_tval   (trap_tval),
+        .trap_mret   (rob_trap_commit && trap_is_mret),
+        .instret_inc (rob_commit_valid),
+        .mtvec_o     (csr_mtvec),
+        .mepc_o      (csr_mepc)
+    );
+
     // --- Pipeline control computation ---
-    assign pipeline_stall = rob_full || iq_full || lsu_full || !ren_ready;
+    assign pipeline_stall = rob_full || iq_full || lsu_full || !ren_ready || serial_stall;
     assign pipeline_flush = rob_flush_out;
     assign flush_redirect_pc = rob_flush_redirect_pc;
 
@@ -141,16 +233,21 @@ module riscv_ooo_core (
     wire alu_exec_valid = iq_issue_valid && !iq_is_load && !iq_is_store;
     wire alu_cdb_valid  = alu_exec_valid && iq_writes_rd;
 
-    assign cdb_valid   = alu_cdb_valid || lsu_result_valid;
-    assign cdb_phys_rd = lsu_result_valid ? lsu_result_phys_rd : iq_phys_rd;
-    assign cdb_data    = lsu_result_valid ? lsu_result_data :
+    // (A CSR writeback never collides with the others: it is serialized, so the
+    // IQ and LSU have nothing in flight that cycle.)
+    assign cdb_valid   = alu_cdb_valid || lsu_result_valid || (csr_wb_valid && csr_wb_writes);
+    assign cdb_phys_rd = csr_wb_valid ? csr_wb_phys :
+                         lsu_result_valid ? lsu_result_phys_rd : iq_phys_rd;
+    assign cdb_data    = csr_wb_valid ? csr_wb_data :
+                         lsu_result_valid ? lsu_result_data :
                          ((iq_is_branch || iq_is_jump) ? br_link_addr : alu_result);
-    assign cdb_rob_idx = lsu_result_valid ? lsu_result_rob_idx : iq_rob_idx;
+    assign cdb_rob_idx = csr_wb_valid ? csr_wb_rob :
+                         lsu_result_valid ? lsu_result_rob_idx : iq_rob_idx;
     assign cdb_mispredicted  = (iq_issue_valid && (iq_is_branch || iq_is_jump)) ? br_mispredicted : 1'b0;
     assign cdb_branch_target = br_target;
 
     // ROB completion also fires for stores, branches, and x0-dest instructions
-    wire rob_complete_en = (iq_issue_valid && !iq_is_load) || lsu_result_valid;
+    wire rob_complete_en = (iq_issue_valid && !iq_is_load) || lsu_result_valid || csr_wb_valid;
 
     // --- Decode valid gated by stall ---
     wire dispatch_en = dec_valid && !pipeline_stall && !pipeline_flush;
@@ -222,8 +319,14 @@ module riscv_ooo_core (
         .is_jump     (dec_is_jump),
         .uses_rs1    (dec_uses_rs1),
         .uses_rs2    (dec_uses_rs2),
-        .writes_rd   (dec_writes_rd),
+        .writes_rd   (dec_writes_rd_raw),
         .illegal_instr(dec_illegal),
+        .is_csr      (dec_is_csr),
+        .csr_op      (dec_csr_op),
+        .csr_uimm    (dec_csr_uimm),
+        .is_ecall    (dec_is_ecall),
+        .is_ebreak   (dec_is_ebreak),
+        .is_mret     (dec_is_mret),
         .decoded_valid(dec_valid)
     );
 
@@ -273,7 +376,7 @@ module riscv_ooo_core (
     issue_queue u_iq (
         .clk                    (clk),
         .rst_n                  (rst_n),
-        .dispatch_en            (dispatch_en),
+        .dispatch_en            (dispatch_en && !dec_serial),
         .dispatch_fu_type       (dec_fu_type),
         .dispatch_alu_op        (dec_alu_op),
         .dispatch_phys_rd       (ren_phys_rd_new),
@@ -363,6 +466,7 @@ module riscv_ooo_core (
         .alloc_is_branch       (dec_is_branch || dec_is_jump),
         .alloc_is_store        (dec_is_store),
         .alloc_is_load         (dec_is_load),
+        .alloc_trap            (dec_trap),
         .alloc_idx             (rob_alloc_idx),
         .head_idx              (rob_head_raw),
         .rob_full              (rob_full),
@@ -381,6 +485,9 @@ module riscv_ooo_core (
         .commit_result         (rob_commit_result),
         .commit_rob_idx        (rob_commit_idx),
         .flush_out             (rob_flush_out),
+        .trap_commit           (rob_trap_commit),
+        .trap_target           (trap_is_mret ? csr_mepc : csr_mtvec),
+        .empty                 (rob_empty),
         .flush_redirect_pc     (rob_flush_redirect_pc),
         .flush_in              (1'b0)  // External flush not used
     );
