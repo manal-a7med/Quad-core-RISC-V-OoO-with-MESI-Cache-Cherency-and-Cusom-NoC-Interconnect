@@ -8,6 +8,8 @@
 #   make synth-soc   Yosys generic synthesis of quad_core_top (slow until the
 #                    caches and memory map to BRAM in P2)
 #   make synth-fpga  Yosys synth_xilinx of fpga_top, prints a resource report
+#   make synth-fpga-core  Artix-7 LUT/FF estimate for one core (used by results)
+#   make results     Regenerate docs/results/index.html (RISCV_TESTS=<checkout>)
 #   make animate     MESI terminal walkthrough + animated GIF
 #   make gui         Interactive MESI animation window
 #   make clean       Remove build outputs
@@ -21,7 +23,7 @@ VVP      ?= vvp
 YOSYS    ?= yosys
 PYTHON   ?= python3
 
-INC_FLAGS = -g2012 -DSIM -I rtl/core -I rtl/cache
+INC_FLAGS = -g2012 -DSIM -I rtl/core -I rtl/cache -I verif
 OUT_DIR   = build
 GIF_OUT   = docs/mesi_coherence_animation.gif
 CHECK     = sh scripts/check_log.sh
@@ -34,7 +36,7 @@ SOC_RTL   = $(CORE_RTL) $(CACHE_RTL) $(COH_RTL) $(MEM_RTL) rtl/top/quad_core_top
 
 TESTS = mesi arbiter cache core dep corner quad
 
-.PHONY: all sim $(addprefix sim-,$(TESTS)) sim-repro isa synth synth-soc synth-fpga animate gui clean help
+.PHONY: all sim $(addprefix sim-,$(TESTS)) sim-repro isa synth synth-soc synth-fpga results animate gui clean help
 
 all: sim
 
@@ -87,6 +89,13 @@ synth-soc: | $(OUT_DIR)
 
 synth-fpga: | $(OUT_DIR)
 	$(YOSYS) -q -l $(OUT_DIR)/synth_fpga.log -p "read_verilog -DSYNTHESIS -I rtl/core -I rtl/cache $(SOC_RTL) rtl/top/fpga_top.v; synth_xilinx -family xc7 -top fpga_top; stat"
+
+results:
+	sh scripts/viz/collect.sh $(RISCV_TESTS)
+	$(PYTHON) scripts/viz/make_results.py build/viz docs/results/index.html
+
+synth-fpga-core: | $(OUT_DIR)
+	$(YOSYS) -q -l $(OUT_DIR)/synth_fpga_core.log -p "read_verilog -DSYNTHESIS -I rtl/core $(CORE_RTL); synth_xilinx -family xc7 -top riscv_ooo_core; stat"
 
 animate:
 	$(PYTHON) scripts/mesi_visualizer.py --verify-rtl --cli --gif $(GIF_OUT)

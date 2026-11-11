@@ -19,6 +19,7 @@ module tb_repro;
       else dr <= dmem[da[9:2]] >> (da[1:0]*8);
     end
   end
+  `include "trace.vh"
   task chk(input [8*40:1] n, input [31:0] got, exp); $display("%0s got=%h exp=%h %0s", n, got, exp, got===exp?"PASS":"FAIL"); endtask
   initial begin #22 rst_n=1; #3000;
     chk("JAL x1 link",`ARCH(1),32'h0C);

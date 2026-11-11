@@ -11,7 +11,7 @@ CC=${CC:-riscv64-unknown-elf-gcc}
 OBJCOPY=${OBJCOPY:-riscv64-unknown-elf-objcopy}
 TESTS=${*:-$(cd "$RVT/isa/rv32ui" && ls *.S | sed 's/\.S$//' | grep -v -e fence_i -e ma_data)}
 
-iverilog -g2012 -DSIM -I "$RTL" -o "$OUT/tb_isa.vvp" "$RTL"/*.v "$HERE/tb_isa.v"
+iverilog -g2012 -DSIM -I "$RTL" -I "$ROOT/verif" -o "$OUT/tb_isa.vvp" "$RTL"/*.v "$HERE/tb_isa.v"
 
 pass=0; fail=0; : > "$OUT/summary.txt"
 for t in $TESTS; do

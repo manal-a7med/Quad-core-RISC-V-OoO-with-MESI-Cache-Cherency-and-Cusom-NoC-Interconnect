@@ -2,7 +2,7 @@
 // Single-core ISA test harness: 64 KB unified memory, 1-cycle handshake.
 // Loads +hex=<file> (word-per-line), runs until the program writes TOHOST
 // (0xFFF0) or +timeout cycles pass. Prints "RESULT PASS" or "RESULT FAIL".
-// With +trace, prints one line per commit for the pipeline viewer.
+// With +trace, prints pipeline events (see verif/trace.vh).
 module tb_isa;
   reg clk = 0, rst_n = 0;
   always #5 clk = ~clk;
@@ -18,7 +18,6 @@ module tb_isa;
   reg [31:0] mem [0:16383];
   reg [1023:0] hexfile;
   integer k, cycles, timeout, tohost_seen;
-  reg trace;
 
   initial begin
     for (k = 0; k < 16384; k = k + 1) mem[k] = 32'h00000013;
@@ -27,7 +26,6 @@ module tb_isa;
     end
     $readmemh(hexfile, mem);
     if (!$value$plusargs("timeout=%d", timeout)) timeout = 20000;
-    trace = $test$plusargs("trace");
   end
 
   always @(*) begin iack = ireq; ir = mem[ia[15:2]]; end
@@ -52,10 +50,7 @@ module tb_isa;
     end
   end
 
-  // Commit trace: cycle, ROB index, architectural rd, value
-  always @(posedge clk) if (trace && dut.rob_commit_valid)
-    $display("COMMIT %0d rob=%0d rd=x%0d val=%h", cycles, dut.rob_commit_idx,
-             dut.u_rob.commit_arch_rd, dut.u_rob.commit_result);
+  `include "trace.vh"
 
   initial begin
     cycles = 0;
