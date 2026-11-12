@@ -28,6 +28,10 @@
 #   make regress     Everything except the slow synthesis and benchmarks (riscv-tests submodule)
 #   make clean       Remove build outputs
 #
+#   Add NOC=1 to any target for the 2x2 mesh NoC + directory build instead of
+#   the snooping bus (NOC_BANKS=4: a directory home at every node). Outputs go
+#   to build/noc1/ (build/noc4/), e.g.  make regress NOC=1   make bench NOC=1
+#
 # Tools come from PATH. On Windows override, e.g.
 #   make IVERILOG=C:/iverilog/bin/iverilog.exe VVP=C:/iverilog/bin/vvp.exe sim
 # =============================================================================
@@ -49,6 +53,20 @@ COH_RTL   = $(sort $(filter-out rtl/coherence/mesi_protocol.v,$(wildcard rtl/coh
 MEM_RTL   = $(sort $(wildcard rtl/memory/*.v))
 IO_RTL    = $(sort $(wildcard rtl/io/*.v))
 SOC_RTL   = $(CORE_RTL) $(CACHE_RTL) $(COH_RTL) $(MEM_RTL) $(IO_RTL) rtl/top/quad_core_top.v
+
+# NOC=1: build the SoC with the 2x2 mesh NoC + directory instead of the
+# snooping bus (rtl/noc/). NOC_BANKS=4 puts a directory home at every node.
+# Outputs go to build/noc<banks>/ so the two builds never mix.
+NOC       ?=
+NOC_BANKS ?= 1
+ifneq ($(NOC),)
+NOC_DEFS   = -DNOC -DNOC_BANKS=$(NOC_BANKS)
+INC_FLAGS += $(NOC_DEFS) -I rtl/noc
+SOC_RTL   += $(sort $(wildcard rtl/noc/*.v))
+OUT_DIR    = build/noc$(NOC_BANKS)
+VL_CFG    ?= noc$(NOC_BANKS)
+export NOC NOC_BANKS
+endif
 
 TESTS = mesi arbiter cache core dep corner quad
 
@@ -101,7 +119,7 @@ isa:
 	$(check_rvt)
 	sh verif/riscv-tests/run.sh $(RISCV_TESTS)
 
-LINT = $(VERILATOR) --lint-only -Wall -Wno-fatal -Irtl/core -Irtl/cache
+LINT = $(VERILATOR) --lint-only -Wall -Wno-fatal -Irtl/core -Irtl/cache $(NOC_DEFS) -Irtl/noc
 lint: | $(OUT_DIR)
 	$(LINT) --top-module riscv_ooo_core $(CORE_RTL) > $(OUT_DIR)/lint.log 2>&1 || true
 	@! grep "^%Error" $(OUT_DIR)/lint.log
@@ -116,16 +134,16 @@ soc-isa:
 
 # Verilator model of the SoC testbench: same cycle counts as iverilog, about
 # 40x faster. Used for the benchmarks.
-VL_FLAGS = --binary --timing -O3 -j 4 -Wno-fatal -Wno-lint -Wno-style -DSIM -Irtl/core -Irtl/cache -Iverif
+VL_FLAGS = --binary --timing -O3 -j 4 -Wno-fatal -Wno-lint -Wno-style -DSIM -Irtl/core -Irtl/cache -Iverif $(NOC_DEFS) -Irtl/noc
 VL_CFG  ?= soc
 VL_DEFS ?=
-$(OUT_DIR)/vl_$(VL_CFG)/Vtb_soc: $(SOC_RTL) verif/soc/tb_soc.v
+$(OUT_DIR)/vl_$(VL_CFG)/Vtb_soc: $(SOC_RTL) verif/soc/tb_soc.v | $(OUT_DIR)
 	$(VERILATOR) $(VL_FLAGS) $(VL_DEFS) --top-module tb_soc -Mdir $(OUT_DIR)/vl_$(VL_CFG) $(SOC_RTL) verif/soc/tb_soc.v > /dev/null
 
 # riscv-tests benchmarks on the SoC (riscv-tests submodule); see scripts/bench.sh
-bench: $(OUT_DIR)/vl_soc/Vtb_soc
+bench: $(OUT_DIR)/vl_$(VL_CFG)/Vtb_soc
 	$(check_rvt)
-	sh scripts/bench.sh $(RISCV_TESTS)
+	SIM=$(CURDIR)/$(OUT_DIR)/vl_$(VL_CFG)/Vtb_soc OUT=$(CURDIR)/$(OUT_DIR)/bench sh scripts/bench.sh $(RISCV_TESTS)
 
 # The benchmarks on five builds: full, no branch prediction, in-order issue,
 # neither, and MSI instead of MESI (see scripts/ablation.sh)

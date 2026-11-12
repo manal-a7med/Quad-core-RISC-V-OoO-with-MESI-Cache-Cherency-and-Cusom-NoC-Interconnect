@@ -56,6 +56,7 @@ module l1_dcache (
     input  wire         bus_ack,
     input  wire         bus_grant,
     input  wire         bus_shared,
+    output wire         bus_way,         // way being filled / written back (directory hint)
 
     // Snoop side
     input  wire [31:0]  snoop_addr,
@@ -124,6 +125,9 @@ module l1_dcache (
 
     wire vic_way   = (st0 == I) ? 1'b0 : (st1 == I) ? 1'b1 : lru_bits[lk_idx];
     wire vic_dirty = ((vic_way ? st1 : st0) == M);
+
+    // A request starts in COMPARE, the cycle pend_way is chosen
+    assign bus_way = (state == ST_COMPARE) ? (cache_hit ? hit_way : vic_way) : pend_way;
 
     wire [1:0]          pend_state = pend_way ? st1 : st0;
     wire [TAG_BITS-1:0] pend_tag   = pend_way ? t1  : t0;

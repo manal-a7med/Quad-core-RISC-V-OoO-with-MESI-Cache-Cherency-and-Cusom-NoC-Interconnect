@@ -32,6 +32,7 @@ module tb_quad_core;
     integer snoop_hitm_count;
     integer snoop_ack_count;
     integer l2_resp_count;
+    integer g;
 
     always @(posedge clk) begin
         if (!rst_n) begin
@@ -50,8 +51,9 @@ module tb_quad_core;
             if (dut.mc_ack)
                 mem_access_count <= mem_access_count + 1;
 
-            if (dut.u_snoop.state == 3'b000 && dut.u_snoop.next_state != 3'b000) begin
-                case (dut.sc_req_cmd)
+`ifndef NOC
+            if (dut.u_ic.u_snoop.state == 3'b000 && dut.u_ic.u_snoop.next_state != 3'b000) begin
+                case (dut.u_ic.sc_req_cmd)
                     `BUS_READ:  bus_rd_count    <= bus_rd_count + 1;
                     `BUS_READX: bus_rdx_count   <= bus_rdx_count + 1;
                     `BUS_UPGR:  bus_upgr_count  <= bus_upgr_count + 1;
@@ -59,16 +61,32 @@ module tb_quad_core;
                 endcase
             end
 
-            if (dut.u_snoop.state == 3'b010) begin // COLLECT_RESPONSES
-                if (dut.u_snoop.hit)  snoop_hit_count  <= snoop_hit_count + 1;
-                if (dut.u_snoop.hitm) snoop_hitm_count <= snoop_hitm_count + 1;
-                if ((dut.sc_snoop_resp[1:0] == `SNOOP_ACK) ||
-                    (dut.sc_snoop_resp[3:2] == `SNOOP_ACK) ||
-                    (dut.sc_snoop_resp[5:4] == `SNOOP_ACK) ||
-                    (dut.sc_snoop_resp[7:6] == `SNOOP_ACK))
+            if (dut.u_ic.u_snoop.state == 3'b010) begin // COLLECT_RESPONSES
+                if (dut.u_ic.u_snoop.hit)  snoop_hit_count  <= snoop_hit_count + 1;
+                if (dut.u_ic.u_snoop.hitm) snoop_hitm_count <= snoop_hitm_count + 1;
+                if ((dut.u_ic.sc_snoop_resp[1:0] == `SNOOP_ACK) ||
+                    (dut.u_ic.sc_snoop_resp[3:2] == `SNOOP_ACK) ||
+                    (dut.u_ic.sc_snoop_resp[5:4] == `SNOOP_ACK) ||
+                    (dut.u_ic.sc_snoop_resp[7:6] == `SNOOP_ACK))
                     snoop_ack_count <= snoop_ack_count + 1;
             end
 
+`else
+            // NoC build: the same events counted at the L1 ports (requests
+            // completed, probe answers given)
+            for (g = 0; g < 4; g = g + 1) begin
+                if (dut.port_ack[g] && !dut.ic_own[g])
+                    case (dut.bus_cmd[g])
+                        `BUS_READ:  bus_rd_count    = bus_rd_count + 1;
+                        `BUS_READX: bus_rdx_count   = bus_rdx_count + 1;
+                        `BUS_UPGR:  bus_upgr_count  = bus_upgr_count + 1;
+                        `BUS_FLUSH: bus_flush_count = bus_flush_count + 1;
+                    endcase
+                if (dut.snoop_resp[g] == `SNOOP_HIT)  snoop_hit_count  = snoop_hit_count + 1;
+                if (dut.snoop_resp[g] == `SNOOP_HITM) snoop_hitm_count = snoop_hitm_count + 1;
+                if (dut.snoop_resp[g] == `SNOOP_ACK)  snoop_ack_count  = snoop_ack_count + 1;
+            end
+`endif
             if (dut.l2_resp_valid)
                 l2_resp_count <= l2_resp_count + 1;
         end
@@ -165,7 +183,12 @@ module tb_quad_core;
 
         // Run for 800 cycles so all 4 cores complete all instruction fetches,
         // L1D/L2 misses, MESI upgrades, cache-to-cache transfers, and ROB commits
+        // (the NoC build has longer miss latencies: 1600 cycles)
+`ifdef NOC
+        #16000;
+`else
         #8000;
+`endif
 
         $display("");
         $display("============================================================================");
