@@ -55,7 +55,7 @@ done
 # fpga_top (make synth-fpga, slow: run it first to include it).
 # The ISA programs must have been built (the rv32ui runs above do that).
 mkdir -p "$V/soc"
-for p in hello parsum atomics prodcons litmus memstress; do
+for p in hello parsum atomics prodcons litmus memstress selfmod; do
   make -C "$ROOT" -s soc-run PROG=$p > /dev/null 2>&1 || true
   make -C "$ROOT" -s fpga-sim PROG=$p > /dev/null 2>&1 || true
   cp "$ROOT/build/sw/$p.log" "$ROOT/build/sw/$p.fpga.log" "$V/soc/" 2>/dev/null || true
