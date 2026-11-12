@@ -20,6 +20,7 @@ module riscv_ooo_core (
     input  wire [31:0] icache_rdata,
     output wire        icache_req,
     input  wire        icache_ack,
+    output wire        icache_flush,       // FENCE.I: discard every line of the I-cache
 
     // D-Cache interface
     output wire [31:0] dcache_addr,
@@ -152,6 +153,15 @@ module riscv_ooo_core (
     // full fence: older stores drain first (the LSU writes committed stores
     // before it issues any load), younger accesses wait.
     wire        dec_serial = dec_valid && (dec_trap || dec_is_csr || dec_is_amo || dec_is_fence);
+    // FENCE.I (funct3 001) also waits until every older store has reached the
+    // data cache, empties the I-cache when it executes, and restarts fetch at
+    // the next instruction when it commits (it is completed as a mispredicted
+    // jump to pc + 4). Fetch then reads lines again through the bus, which
+    // returns the newest copy, so code written by this hart's stores is seen.
+    wire        dec_is_fencei = dec_is_fence && (fd_instr[14:12] == 3'b001);
+    wire        lsu_empty;
+    reg         fencei_r;           // the serialized instruction in flight is a FENCE.I
+    reg  [31:0] fencei_npc;
     wire        dec_no_iq  = dec_trap || dec_is_csr;      // executed at dispatch / commit
     wire        dec_writes_rd = dec_writes_rd_raw && !dec_trap;
 
@@ -159,7 +169,8 @@ module riscv_ooo_core (
     reg  [3:0]  amo_op_r;           // its AMO code (the only memory op in flight)
     reg         trap_is_mret;
     reg  [31:0] trap_cause, trap_pc, trap_tval;
-    wire        serial_stall = dec_valid && (ser_busy || (dec_serial && !rob_empty));
+    wire        serial_stall = dec_valid && (ser_busy || (dec_serial && !rob_empty) ||
+                                             (dec_is_fencei && !lsu_empty));
 
     // CSR execution (at dispatch; result written to the CDB next cycle)
     wire [31:0] csr_src  = dec_csr_uimm ? {27'd0, dec_rs1} : rf_rs1_data;
@@ -180,6 +191,7 @@ module riscv_ooo_core (
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             ser_busy <= 1'b0; csr_wb_valid <= 1'b0; amo_op_r <= `AMO_NONE;
+            fencei_r <= 1'b0; fencei_npc <= 32'd0;
             trap_is_mret <= 1'b0; trap_cause <= 32'd0; trap_pc <= 32'd0; trap_tval <= 32'd0;
         end else begin
             csr_wb_valid <= csr_exec;
@@ -192,10 +204,13 @@ module riscv_ooo_core (
             if (pipeline_flush || rob_commit_valid) begin
                 ser_busy <= 1'b0;
                 amo_op_r <= `AMO_NONE;
+                fencei_r <= 1'b0;
             end
             if (dispatch_en && dec_serial) begin
                 ser_busy <= 1'b1;
                 amo_op_r <= dec_is_amo ? dec_amo_op : `AMO_NONE;
+                fencei_r   <= dec_is_fencei;
+                fencei_npc <= fd_pc + 32'd4;
             end
             if (dispatch_en && dec_trap) begin
                 trap_is_mret <= dec_is_mret;
@@ -269,10 +284,12 @@ module riscv_ooo_core (
     assign cdb_rob_idx = csr_wb_valid ? csr_wb_rob :
                          lsu_accept ? lsu_result_rob_idx :
                          mdu_accept ? mdu_result_rob_idx : iq_rob_idx;
-    assign cdb_mispredicted  = (iq_issue_valid && (iq_is_branch || iq_is_jump)) ? br_mispredicted : 1'b0;
+    wire   fencei_exec       = exec_valid && fencei_r;
+    assign icache_flush      = fencei_exec;
+    assign cdb_mispredicted  = (iq_issue_valid && (iq_is_branch || iq_is_jump)) ? br_mispredicted : fencei_exec;
     // Where to restart if the prediction was wrong: the target if the branch
     // is taken, the next instruction if it was predicted taken and is not
-    assign cdb_branch_target = br_taken ? br_target : br_link_addr;
+    assign cdb_branch_target = fencei_r ? fencei_npc : br_taken ? br_target : br_link_addr;
 
     // Calls and returns, for the return address stack (same rule as the
     // pre-decode in fetch_unit: x1 and x5 are the link registers)
@@ -591,6 +608,7 @@ module riscv_ooo_core (
         .result_rob_idx (lsu_result_rob_idx),
         .result_accept  (lsu_accept),
         .lsq_full       (lsu_full),
+        .lsq_empty      (lsu_empty),
         .lsq_ready      (lsu_ready),
         .commit_store_en(rob_commit_valid && rob_commit_is_store),
         .commit_rob_idx (rob_commit_idx),

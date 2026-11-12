@@ -75,7 +75,7 @@ does not stop other instructions from issuing.
 blocks), result after two cycles; restoring divider, 34 cycles.
 
 **Serialized instructions.** CSR accesses, ECALL, EBREAK, MRET, traps, LR/SC,
-the AMOs and FENCE are dispatched only into an empty ROB and run alone. They
+the AMOs, FENCE and FENCE.I are dispatched only into an empty ROB and run alone. They
 therefore act as full fences.
 
 **CSRs and traps** (`csr_file.v`). mstatus, misa, mie, mtvec (direct mode),
@@ -98,14 +98,21 @@ copies) and replaces the first invalid way, otherwise the way named by a
 per-set pointer. That is correct because every L1D is snooped on every bus
 transaction.
 
+An L1I miss is a BusRd on the coherence bus (through the bus port of the same
+core's L1D, which waits meanwhile). All four L1Ds are snooped, the core's own
+included, so the fetched line is the newest copy wherever it is: an L1D, the
+L2 or memory. The L1I is not a MESI participant: it keeps its copy when a
+store later changes the line. FENCE.I is what brings it up to date. It waits
+until every older store of the hart has reached its L1D, empties the hart's
+L1I, and restarts fetch at the next instruction. As the RISC-V specification
+says, it affects only the hart that executes it.
+
 Known limits: an L1D hit is answered two cycles after the request, and the
-cache handles one request at a time (blocking). L1I misses read main memory
-directly and do not go through the L2 or the bus, and FENCE.I is a no-op, so
-code written by stores is not seen by fetch (review bug 16, open).
+cache handles one request at a time (blocking).
 
 ## 4. Coherence (`rtl/coherence`)
 
-MESI over an atomic snooping bus: `bus_arbiter.v` grants one L1D at a time
+MESI over an atomic snooping bus: `bus_arbiter.v` grants one core's bus port at a time
 (round-robin), `snoop_controller.v` broadcasts the request to the other three
 caches, collects their responses and talks to the L2. A cache holding the line
 in M supplies the data (cache-to-cache transfer).

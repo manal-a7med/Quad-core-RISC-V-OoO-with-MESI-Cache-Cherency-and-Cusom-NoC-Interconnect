@@ -190,7 +190,7 @@ module tb_quad_core;
         $display(" CACHE HIERARCHY & MESI COHERENCE BUS VERIFICATION");
         $display("============================================================================");
         $display("   Total Cycles Run       : %0d", cycle_count);
-        $display("   Main Memory Transfers  : %0d (8x L1I fills + 2x L2 data misses)", mem_access_count);
+        $display("   Main Memory Transfers  : %0d (L2 misses; the four cores' instruction fetches share lines through the L2)", mem_access_count);
         $display("   L2 Cache Responses     : %0d", l2_resp_count);
         $display("   BusRd   Transactions   : %0d", bus_rd_count);
         $display("   BusRdX  Transactions   : %0d", bus_rdx_count);
@@ -199,8 +199,8 @@ module tb_quad_core;
         $display("   Snoop HITM Events      : %0d (Cache-to-Cache modified transfers)", snoop_hitm_count);
         $display("   Snoop ACK  Events      : %0d (Shared invalidations)", snoop_ack_count);
 
-        if (mem_access_count >= 10) begin
-            $display("   [PASS] Memory Controller & Arbiter serviced L1I and L2 misses (%0d accesses)", mem_access_count);
+        if (mem_access_count >= 4) begin   // 2 code lines + 2 data lines, each read from memory once
+            $display("   [PASS] Memory controller serviced the L2's misses (%0d accesses)", mem_access_count);
             pass_count = pass_count + 1;
         end else begin
             $display("   [FAIL] Insufficient memory accesses (%0d)", mem_access_count);

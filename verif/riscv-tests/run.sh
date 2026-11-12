@@ -1,5 +1,5 @@
 #!/bin/sh
-# Build and run the rv32ui, rv32um and rv32ua riscv-tests, plus our own tests in
+# Build and run the rv32ui (with fence_i), rv32um and rv32ua riscv-tests, plus our own tests in
 # verif/system/, on the OoO core.
 # Usage: verif/riscv-tests/run.sh <path-to-riscv-tests-checkout> [test ...]
 set -e
@@ -10,7 +10,7 @@ RTL=${RTL:-$ROOT/rtl/core}   # override to test another copy of the core
 OUT=${OUT:-$ROOT/build/isa}; mkdir -p "$OUT"
 CC=${CC:-riscv64-unknown-elf-gcc}
 OBJCOPY=${OBJCOPY:-riscv64-unknown-elf-objcopy}
-TESTS=${*:-$(cd "$RVT/isa/rv32ui" && ls *.S | sed 's/\.S$//' | grep -v -e fence_i -e ma_data)}
+TESTS=${*:-$(cd "$RVT/isa/rv32ui" && ls *.S | sed 's/\.S$//' | grep -v -e ma_data)}
 UA_TESTS=$( [ -n "$*" ] || (cd "$RVT/isa/rv32ua" && ls *.S | sed 's/\.S$//') )
 # NO_M=1 skips rv32um (for copies of the core from before RV32M)
 UM_TESTS=$( [ -n "$*" ] || [ -n "$NO_M" ] || (cd "$RVT/isa/rv32um" && ls *.S | sed 's/\.S$//') )
@@ -20,7 +20,7 @@ iverilog -g2012 -DSIM $ISA_DEFS -I "$RTL" -I "$ROOT/verif" -o "$OUT/tb_isa.vvp" 
 
 pass=0; fail=0; : > "$OUT/summary.txt"
 run_one() {   # run_one <name> <source.S>
-  $CC -march=rv32ima_zicsr -mabi=ilp32 -static -nostdlib -nostartfiles -Wl,--no-warn-rwx-segments \
+  $CC -march=rv32ima_zicsr_zifencei -mabi=ilp32 -static -nostdlib -nostartfiles -Wl,--no-warn-rwx-segments \
       -I "$HERE/env" -I "$RVT/isa/macros/scalar" -T "$HERE/env/link.ld" "$2" -o "$OUT/$1.elf"
   $OBJCOPY -O binary "$OUT/$1.elf" "$OUT/$1.bin"
   od -An -v -tx4 -w4 "$OUT/$1.bin" | tr -d ' ' > "$OUT/$1.hex"
