@@ -103,7 +103,8 @@ The full description, written from the code, is in
 |---|---|
 | `rtl/core` | Out-of-order core: fetch and prediction, decode, rename, issue queue, ALU, branch unit, multiply/divide, load/store unit, reorder buffer, CSRs |
 | `rtl/cache` | L1 instruction cache, L1 data cache (MESI), L2 |
-| `rtl/coherence` | Bus arbiter, coherence bus, snoop controller |
+| `rtl/coherence` | Bus arbiter, coherence bus, snoop controller, the L1 coherence port contract (`coh_port.vh`) |
+| `rtl/noc` | NoC + directory build (`NOC=1`): mesh router, network interface, directory home |
 | `rtl/memory` | Main memory and its controller |
 | `rtl/io` | UART, memory-mapped I/O registers, 7-segment driver |
 | `rtl/top` | `quad_core_top` (the system), `fpga_top` (board wrapper with clock and pins) |
@@ -266,6 +267,21 @@ Verilog it takes roughly 45 minutes.
 Each demo program has its expected output in `sw/<name>/expect.txt`, and
 `soc-run` and `fpga-sim` check the UART output against it
 (`check_uart: N expected lines found`).
+
+### NoC + directory build
+
+The same system can be built with a 2x2 mesh network-on-chip and a directory
+in place of the snooping bus (see `docs/architecture.md`, section 4.2). Add
+`NOC=1` to any command above; `NOC_BANKS=4` gives every node its own
+directory home. Outputs go to `build/noc1/` (or `build/noc4/`), so the two
+builds never mix.
+
+| Command | You should see |
+|---|---|
+| `make regress NOC=1` | `regress: all checks passed` |
+| `make coh-mutants NOC=1` | `mutants caught: 8 of 8` (the six above plus two directory bugs) |
+| `make soc-run NOC=1 PROG=litmus` | `litmus: no forbidden outcome` |
+| `make bench NOC=1` | benchmark cycle counts for the NoC build in `build/noc1/bench/results.txt` |
 
 ### Performance
 

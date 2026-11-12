@@ -8,8 +8,9 @@ file (and the code) is right.
 
 Four RV32IMA + Zicsr cores, machine mode only, each a **single-issue
 out-of-order** core with private L1 caches. The four L1 data caches are kept
-coherent with the MESI protocol over a snooping bus, in front of a shared L2
-cache and a 64 KB main memory. A small I/O block (UART, LEDs, 7-segment
+coherent with the MESI protocol over a snooping bus (or, built with `NOC=1`,
+over a 2x2 mesh network with a directory; section 4.2), in front of a shared
+L2 cache and a 64 KB main memory. A small I/O block (UART, LEDs, 7-segment
 display) sits beside the caches. The FPGA target is the Digilent Nexys A7-100T
 (Xilinx XC7A100T) at 50 MHz.
 
@@ -131,6 +132,68 @@ line held in M or E.
 
 Building with `CFG_MSI` never grants E (measurement only; see
 `scripts/ablation.sh`).
+
+### 4.1 The L1 coherence port
+
+Each L1 data cache talks to the rest of the memory system through one port
+with a request half (BusRd / BusRdX / BusUpgr / BusFlush, acknowledged with
+the line and a shared bit) and a probe half (the snoop port: the interconnect
+looks a line up and the cache answers the next cycle). The contract is
+written out in `rtl/coherence/coh_port.vh`. The core's I-cache misses use the
+same port (a BusRd that also probes the core's own L1D). Two interconnects
+sit behind this port, chosen when the system is built:
+
+| Build | Module | How a request reaches the other caches |
+|---|---|---|
+| default | `rtl/coherence/bus_interconnect.v` | snooping bus (above): broadcast to every cache |
+| `NOC=1` | `rtl/noc/noc_interconnect.v` | 2x2 mesh network + directory: sent only to the caches that hold the line |
+
+Both use the same L1 caches, the same L2, memory and I/O, so any difference
+in a result comes from the interconnect alone. The bus build is unchanged
+cycle for cycle by this split.
+
+### 4.2 NoC + directory build (`NOC=1`, `rtl/noc`)
+
+```
+   node 2 --- node 3        each node: one core tile (core, L1I, L1D,
+     |          |           network interface) and a router per network
+   node 0 --- node 1        NOC_BANKS=1: directory home at node 0
+                            NOC_BANKS=4: a home at every node
+```
+
+* **Networks.** Three separate 2x2 meshes, one per message class, so a
+  message can never wait behind one of another class (no protocol
+  deadlock): REQ (core to home: GetS, GetM, Upgrade, PutM), RSP (core to
+  home: probe answers) and OUT (home to core: probes and grants). Grants and
+  probes share OUT so that they reach a core in the order the home sent
+  them.
+* **Routers** (`noc_router.v`): 3 ports (local, X neighbour, Y neighbour),
+  XY routing, wormhole switching, a 2-flit buffer per input, round-robin
+  output allocation, valid/ready flow control. A flit is 64 bits; a packet
+  is a header flit plus four data flits when it carries a line.
+* **Network interface** (`noc_ni.v`, one per core): turns an L1 request into
+  a packet to the line's home, a grant into the L1 acknowledge, and a probe
+  into a snoop of the L1 whose answer goes back to the home. After a grant
+  it holds any probe back for three cycles so the L1 can finish the access
+  it fetched the line for (without this, two cores storing to one line take
+  it from each other forever).
+* **Directory home** (`dir_home.v`): keeps a copy of every L1D tag with a
+  state (I, S, or EM = only copy, clean or dirty), 4 cores x 128 entries.
+  A request carries the L1 way it fills, so the copy stays exact and no
+  inclusive L2 is needed (an inclusive 16 KB L2 would have to hold all
+  16 KB of the four L1Ds). The home serves one request at a time:
+
+| Request | Probes sent to | Data from | Grant |
+|---|---|---|---|
+| GetS (BusRd) | the owner (EM), if any | dirty probe answer (also written to L2), else L2 | S if another copy stays, else E |
+| GetS from the I-cache | the owner, including the requester's own L1D | as above | the line |
+| GetM (BusRdX) | every other holder | dirty probe answer, else L2 | M |
+| Upgrade (BusUpgr) | every other holder (invalidate) | none | ack; if the requester lost the line meanwhile it is served as GetM |
+| PutM (BusFlush) | none | written to L2 if the sender still owns the line | ack |
+
+With `NOC_BANKS=4` each node is home for a quarter of the lines (line
+address bits [6:5]); the four homes share the one L2 through a round-robin
+port arbiter in `noc_interconnect.v`.
 
 ## 5. Memory map
 
