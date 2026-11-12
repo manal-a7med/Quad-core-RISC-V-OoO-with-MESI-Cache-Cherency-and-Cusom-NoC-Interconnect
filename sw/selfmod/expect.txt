@@ -1,6 +1,6 @@
-hart 0: first=0x00000100 after fence.i=0x00000200 OK
-hart 1: first=0x00000101 after fence.i=0x00000201 OK
-hart 2: first=0x00000102 after fence.i=0x00000202 OK
-hart 3: first=0x00000103 after fence.i=0x00000203 OK
+hart 0: first=0x00000100 after fence.i=0x00000200 inline=0x03000400 OK
+hart 1: first=0x00000101 after fence.i=0x00000201 inline=0x03010401 OK
+hart 2: first=0x00000102 after fence.i=0x00000202 inline=0x03020402 OK
+hart 3: first=0x00000103 after fence.i=0x00000203 inline=0x03030403 OK
 code written by hart 1, run by hart 0: 0x00000333 OK
 selfmod: 0 errors

@@ -548,7 +548,7 @@ module riscv_ooo_core (
         .alloc_arch_rd         (dec_rd),
         .alloc_phys_rd_old     (ren_phys_rd_old),
         .alloc_writes_rd       (dec_writes_rd),
-        .alloc_is_branch       (dec_is_branch || dec_is_jump),
+        .alloc_is_branch       (dec_is_branch || dec_is_jump || dec_is_fencei),   // entries that may redirect at commit
         .alloc_is_store        (dec_is_store),
         .alloc_is_load         (dec_is_load),
         .alloc_trap            (dec_trap),
