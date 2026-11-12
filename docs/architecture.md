@@ -154,12 +154,12 @@ and sets BOOT, the others wait for it.
 reset synchronisation, the UART pin, LEDs and the 7-segment driver.
 Constraints and Vivado scripts are in `synth/`.
 
-Yosys estimate for `fpga_top` (`make synth-fpga`), 2026-11-11:
+Yosys estimate for `fpga_top` (`make synth-fpga`), 2026-11-12:
 
 | Resource | Used | XC7A100T | Share |
 |---|---|---|---|
-| LUT | 57,987 | 63,400 | 91.5% |
-| FF | 27,826 | 126,800 | 22% |
+| LUT | 56,623 | 63,400 | 89.3% |
+| FF | 27,961 | 126,800 | 22% |
 | BRAM36 | 78.5 | 135 | 58% |
 | DSP48 | 16 | 240 | 7% |
 
