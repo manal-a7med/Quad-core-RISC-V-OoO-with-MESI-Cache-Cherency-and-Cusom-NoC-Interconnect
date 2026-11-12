@@ -28,6 +28,7 @@ make soc-run PROG=atomics             # shared counter: plain vs amoadd vs LR/SC
 make soc-run PROG=prodcons            # producer/consumer ring buffer (fences + CAS)
 make soc-run PROG=litmus              # memory-model litmus tests (MP, SB, CoRR, LB, IRIW)
 make soc-run PROG=memstress           # load/store queue stress: bursts of stores and loads
+make soc-run PROG=selfmod             # code written by stores, then run after FENCE.I
 make fpga-sim PROG=hello              # board-level simulation of fpga_top
 ```
 

@@ -16,8 +16,11 @@
 // An instruction is therefore never delivered for the wrong address (review
 // bug 10).
 //
-// A miss fetches the whole line from memory. The line is filled even if the
-// core has moved on in the meantime.
+// A miss fetches the whole line over the coherence bus (a BusRd that snoops
+// all four data caches, see quad_core_top), so the line is the newest copy
+// even if a data cache holds it Modified. The line is filled even if the
+// core has moved on in the meantime. Later stores to the line do not
+// invalidate it here: software runs FENCE.I, which empties this cache.
 // ============================================================================
 
 `include "mesi_defines.vh"
@@ -33,15 +36,15 @@ module l1_icache (
     input  wire        cpu_req,
     output wire        cpu_ack,
 
-    // Memory/L2 interface (for miss handling)
+    // Line fetch (bus read)
     output reg  [31:0] mem_addr,
     input  wire [255:0]mem_rdata,     // Full cache line (8 words)
     output reg         mem_req,
     input  wire        mem_ack,
 
-    // Invalidation interface (from coherence)
-    input  wire        invalidate,
-    input  wire [31:0] inval_addr
+    // FENCE.I: forget every line. A line fill in progress is discarded too
+    // (it may have been read before the stores the fence waits for).
+    input  wire        flush_all
 );
 
     localparam NUM_SETS  = `L1I_NUM_SETS;      // 128
@@ -60,11 +63,10 @@ module l1_icache (
     reg         hit_r;       // ... and whether it was in the cache
     reg         la_ok;       // la_r/hit_r/rd_line hold a lookup
     reg [255:0] rd_line;     // registered array read
+    reg         fill_kill;   // flush_all arrived during this line fill
 
     wire [IDX_WIDTH-1:0] la_r_index  = la_r[IDX_WIDTH+OFF_WIDTH-1:OFF_WIDTH];
     wire [TAG_WIDTH-1:0] la_r_tag    = la_r[31:IDX_WIDTH+OFF_WIDTH];
-    wire [TAG_WIDTH-1:0] inval_tag   = inval_addr[31:IDX_WIDTH+OFF_WIDTH];
-    wire [IDX_WIDTH-1:0] inval_index = inval_addr[IDX_WIDTH+OFF_WIDTH-1:OFF_WIDTH];
 
     // The core is asking for the address that was looked up
     wire want = (state == RUN) && la_ok && cpu_req && (cpu_addr == la_r);
@@ -101,10 +103,8 @@ module l1_icache (
             mem_req  <= 1'b0;
             mem_addr <= 32'd0;
             valid    <= {NUM_SETS{1'b0}};
+            fill_kill <= 1'b0;
         end else begin
-            if (invalidate && valid[inval_index] && tag_array[inval_index] == inval_tag)
-                valid[inval_index] <= 1'b0;
-
             case (state)
                 RUN: begin
                     if (miss) begin
@@ -113,20 +113,24 @@ module l1_icache (
                         state    <= FETCH;          // la_r is kept for the fill
                     end else begin
                         la_r  <= la;
-                        hit_r <= la_hit && !(invalidate && inval_index == la_index);
-                        la_ok <= 1'b1;
+                        hit_r <= la_hit;
+                        la_ok <= !flush_all;
                     end
                 end
 
                 FETCH: begin
+                    if (flush_all) fill_kill <= 1'b1;
                     if (mem_ack) begin
                         mem_req           <= 1'b0;
-                        valid[la_r_index] <= 1'b1;
+                        valid[la_r_index] <= !fill_kill;
+                        fill_kill         <= 1'b0;
                         la_ok             <= 1'b0;  // look up again from the array
                         state             <= RUN;
                     end
                 end
             endcase
+
+            if (flush_all) valid <= {NUM_SETS{1'b0}};
         end
     end
 

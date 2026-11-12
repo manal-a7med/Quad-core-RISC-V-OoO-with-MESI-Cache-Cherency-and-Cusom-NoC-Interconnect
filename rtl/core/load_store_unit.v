@@ -44,6 +44,7 @@ module load_store_unit (
 
     // Status and control
     output wire        lsq_full,
+    output wire        lsq_empty,        // no load or store in the queue (committed stores have all reached the cache)
     output wire        lsq_ready,        // a load/store selected for issue this cycle will find a slot
     input  wire        commit_store_en,
     input  wire [3:0]  commit_rob_idx,   // ROB index of the committing store
@@ -78,12 +79,16 @@ module load_store_unit (
     // slot left and the store was lost (the ROB still marked it complete).
     assign lsq_ready = free_two || (free_found && !enqueue_en);
     integer    fi;
+    reg        any_valid;
+    assign lsq_empty = !any_valid;
 
     always @(*) begin
         free_slot  = 4'd0;
         free_found = 1'b0;
         free_two   = 1'b0;
+        any_valid  = 1'b0;
         for (fi = 0; fi < DEPTH; fi = fi + 1) begin
+            if (lsq_valid[fi]) any_valid = 1'b1;
             if (!lsq_valid[fi]) begin
                 if (free_found) free_two = 1'b1;
                 else begin
