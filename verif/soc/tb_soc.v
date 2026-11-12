@@ -19,12 +19,13 @@ module tb_soc;
                     .exit_value(exit_value), .exit_valid(exit_valid));
 
   reg [31:0] words [0:16383];
-  reg [1023:0] hexfile;
+  reg [8*1024-1:0] hexfile;   // up to 1024 characters (CI checkouts have long paths)
   integer k, cycles, timeout, done_mask, fails;
   reg all;
   initial begin
     for (k = 0; k < 16384; k = k + 1) words[k] = 32'h0;
     if (!$value$plusargs("hex=%s", hexfile)) begin $display("tb_soc: +hex=<file>"); $finish; end
+    if (hexfile[8*1024-1 -: 8] != 0) begin $display("tb_soc: +hex path longer than 1024 characters"); $finish; end
     $readmemh(hexfile, words);
     if (!$value$plusargs("timeout=%d", timeout)) timeout = 3000000;
     all = $test$plusargs("all");
