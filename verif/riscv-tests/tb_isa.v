@@ -28,7 +28,7 @@ module tb_isa;
 `endif
 
   reg [31:0] mem [0:16383];
-  reg [1023:0] hexfile;
+  reg [8*1024-1:0] hexfile;   // up to 1024 characters (CI checkouts have long paths)
   integer k, cycles, timeout, tohost_seen;
 
   initial begin
@@ -36,6 +36,7 @@ module tb_isa;
     if (!$value$plusargs("hex=%s", hexfile)) begin
       $display("tb_isa: pass +hex=<file>"); $finish;
     end
+    if (hexfile[8*1024-1 -: 8] != 0) begin $display("tb_isa: +hex path longer than 1024 characters"); $finish; end
     $readmemh(hexfile, mem);
     if (!$value$plusargs("timeout=%d", timeout)) timeout = 1000000;
   end
