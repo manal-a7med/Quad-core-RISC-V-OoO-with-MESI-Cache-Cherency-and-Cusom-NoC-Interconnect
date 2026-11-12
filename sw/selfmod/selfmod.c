@@ -21,7 +21,8 @@ typedef unsigned (*fn)(void);
 static unsigned code[4][8] __attribute__((aligned(32)));
 static unsigned shared_code[8] __attribute__((aligned(32)));
 static volatile unsigned shared_ready;
-static volatile unsigned first[4][8], stale[4][8], second[4][8], done[4][8];
+static unsigned inline_code[4][8] __attribute__((aligned(32)));
+static volatile unsigned first[4][8], stale[4][8], second[4][8], third[4][8], done[4][8];
 
 static inline void fence_i(void) { __asm__ volatile (".word 0x0000100f")   /* fence.i */; }
 
@@ -41,6 +42,19 @@ int main(unsigned hart)
     fence_i();
     second[hart][0] = ((fn)c)();
 
+    // FENCE.I inside the rewritten function: "fence.i; return K". The first
+    // call puts the line in the instruction cache. After the rewrite, the
+    // instruction right behind the FENCE.I has already been fetched from the
+    // old line when the FENCE.I executes, and must be fetched again.
+    unsigned *d = inline_code[hart];
+    d[0] = 0x0000100f;
+    d[1] = LI_A0(0x300 + hart);
+    d[2] = RET;
+    fence_i();
+    third[hart][0] = ((fn)d)();
+    d[1] = LI_A0(0x400 + hart);
+    third[hart][0] = (third[hart][0] << 16) | ((fn)d)();
+
     if (hart == 1) {
         shared_code[0] = LI_A0(0x333);
         shared_code[1] = RET;
@@ -55,7 +69,8 @@ int main(unsigned hart)
     for (unsigned h = 0; h < 4; h++) {
         while (!done[h][0])
             ;
-        unsigned ok = first[h][0] == 0x100 + h && second[h][0] == 0x200 + h && code[h][2] == 0x200 + h;
+        unsigned ok = first[h][0] == 0x100 + h && second[h][0] == 0x200 + h && code[h][2] == 0x200 + h &&
+                      third[h][0] == (((0x300 + h) << 16) | (0x400 + h));
         errors += !ok;
         uart_puts("hart ");
         uart_putc('0' + h);
@@ -63,6 +78,8 @@ int main(unsigned hart)
         uart_puthex(first[h][0]);
         uart_puts(" after fence.i=0x");
         uart_puthex(second[h][0]);
+        uart_puts(" inline=0x");
+        uart_puthex(third[h][0]);
         uart_puts(ok ? " OK\r\n" : " WRONG\r\n");
         uart_puts("  without fence.i the call ran the ");
         uart_puts(stale[h][0] == 0x100 + h ? "old code\r\n" :
