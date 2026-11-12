@@ -8,7 +8,8 @@ module tb_repro;
     .dcache_addr(da),.dcache_wdata(dw),.dcache_rdata(dr),.dcache_req(dreq),.dcache_wr(dwr),.dcache_ack(dack),.dcache_mem_type(dmt));
   reg [31:0] imem[0:63]; integer k;
   initial begin for(k=0;k<64;k=k+1) imem[k]=32'h13; $readmemh("prog.hex",imem); end
-  always @(*) begin iack=ireq; ir = imem[ia[7:2]]; end
+  // Fetch past the program returns NOPs (no wrap-around, so the program runs once).
+  always @(*) begin iack=ireq; ir = (ia < 32'h100) ? imem[ia[7:2]] : 32'h13; end
   reg [31:0] dmem[0:255];
   initial begin for(k=0;k<256;k=k+1) dmem[k]=0; dmem[8'h40]=32'h55; dmem[8'h80]=32'h11223344; end
   always @(posedge clk) begin
@@ -18,6 +19,7 @@ module tb_repro;
       else dr <= dmem[da[9:2]] >> (da[1:0]*8);
     end
   end
+  `include "trace.vh"
   task chk(input [8*40:1] n, input [31:0] got, exp); $display("%0s got=%h exp=%h %0s", n, got, exp, got===exp?"PASS":"FAIL"); endtask
   initial begin #22 rst_n=1; #3000;
     chk("JAL x1 link",`ARCH(1),32'h0C);

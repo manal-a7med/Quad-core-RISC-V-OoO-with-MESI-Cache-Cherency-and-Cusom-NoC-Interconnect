@@ -1,0 +1,6 @@
+atomics: 4 harts x 200 increments of one shared counter
+plain load/add/store:
+amoadd.w:             800 of 800 OK
+lr.w/sc.w spinlock:   800 of 800 OK
+lock holders:
+cycles:

@@ -1,0 +1,6 @@
+litmus: 50 runs per test, 2 copies (IRIW: 1)
+MP+fence    forbidden r1=1 r2=0: never seen OK
+SB+fence    forbidden r0=0 r1=0: never seen OK
+CoRR        forbidden r1=1 r2=0: never seen OK
+IRIW+fence  forbidden 1 0 / 1 0: never seen OK
+litmus: no forbidden outcome

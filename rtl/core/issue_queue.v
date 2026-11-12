@@ -37,6 +37,7 @@ module issue_queue (
     input  wire [2:0]  dispatch_mem_type,
     input  wire        dispatch_is_jump,
     input  wire        dispatch_writes_rd,
+    input  wire        dispatch_is_muldiv,
 
     // CDB wakeup interface (broadcast from execute)
     input  wire        cdb_valid,
@@ -58,6 +59,7 @@ module issue_queue (
     output reg         issue_is_store,
     output reg         issue_is_jump,
     output reg         issue_writes_rd,
+    output reg         issue_is_muldiv,
     output reg         issue_uses_rs2,
     output reg         issue_predicted_taken,
     output reg  [31:0] issue_predicted_target,
@@ -66,6 +68,9 @@ module issue_queue (
     // Status
     output wire        iq_full,
     input  wire        issue_stall,
+    input  wire        mem_ready,    // the load/store queue has room for one more
+    input  wire        mdu_ready,    // the multiply/divide unit is free
+    input  wire [3:0]  rob_head,     // ROB head: program-order age reference
     input  wire        flush
 );
 
@@ -90,6 +95,7 @@ module issue_queue (
     reg        iq_is_store  [0:`IQ_DEPTH-1];
     reg        iq_is_jump   [0:`IQ_DEPTH-1];
     reg        iq_writes_rd [0:`IQ_DEPTH-1];
+    reg        iq_is_muldiv [0:`IQ_DEPTH-1];
     reg        iq_uses_rs2  [0:`IQ_DEPTH-1];
     reg        iq_pred_taken[0:`IQ_DEPTH-1];
     reg [31:0] iq_pred_tgt  [0:`IQ_DEPTH-1];
@@ -120,7 +126,7 @@ module issue_queue (
 
     // ========================================================================
     // Find ready-to-issue entry (oldest with both operands ready)
-    // Loads wait if an older store is still in the IQ
+    // Loads and stores wait for older loads and stores still in the IQ
     // ========================================================================
     reg [2:0] issue_slot;
     reg       issue_found;
@@ -128,24 +134,69 @@ module issue_queue (
     reg       older_store_pending;
     integer   ii, si;
 
+    // Wakeup bypass: an operand being broadcast on the CDB this cycle counts
+    // as ready, and its value is taken straight from the CDB when the entry
+    // is issued. A chain of dependent instructions then executes in
+    // consecutive cycles instead of every other cycle.
+    reg       rs1_ok [0:`IQ_DEPTH-1];
+    reg       rs2_ok [0:`IQ_DEPTH-1];
+    integer   wi;
+    always @(*) begin
+        for (wi = 0; wi < `IQ_DEPTH; wi = wi + 1) begin
+            rs1_ok[wi] = iq_rs1_ready[wi] || (cdb_valid && iq_phys_rs1[wi] == cdb_phys_rd);
+            rs2_ok[wi] = iq_rs2_ready[wi] || (cdb_valid && iq_phys_rs2[wi] == cdb_phys_rd);
+        end
+    end
+
+    // Program-order age = distance from the ROB head (0 = oldest in flight).
+    // This replaces a saturating per-entry counter, which stopped ordering
+    // entries once two of them had both waited 15+ cycles.
+    // (rob_head is passed in: always @(*) does not see signals that a
+    // function reads from the enclosing module.)
+    function [3:0] rel_age(input [3:0] rob_idx, input [3:0] head);
+        rel_age = rob_idx - head;
+    endfunction
+
     always @(*) begin
         issue_slot  = 3'd0;
         issue_found = 1'b0;
         oldest_age  = 4'd0;
+        older_store_pending = 1'b0;
+        ii = 0; si = 0;
         if (!issue_stall) begin
             for (ii = 0; ii < `IQ_DEPTH; ii = ii + 1) begin
+                // Loads and stores issue in program order among themselves.
+                // - A load may not pass an older store still in the IQ (its
+                //   address is unknown, so the LSQ cannot disambiguate), nor
+                //   an older load: two loads of the same bytes are kept in
+                //   order in the LSQ (RVWMO load-load rule, the CoRR test).
+                // - A store may not pass older loads or stores either. Every
+                //   LSQ entry is then older than every load/store waiting
+                //   here, so a full LSQ always drains by itself and cannot
+                //   be holding the slot an older instruction needs.
+                // They also wait until the LSQ has a slot for them.
                 older_store_pending = 1'b0;
-                if (iq_is_load[ii]) begin
+                if (iq_is_load[ii] || iq_is_store[ii]) begin
+                    if (!mem_ready) older_store_pending = 1'b1;
                     for (si = 0; si < `IQ_DEPTH; si = si + 1) begin
-                        if (iq_valid[si] && iq_is_store[si] && (iq_age[si] > iq_age[ii]))
+                        if (iq_valid[si] && (iq_is_store[si] || iq_is_load[si]) &&
+                            (rel_age(iq_rob_idx[si], rob_head) < rel_age(iq_rob_idx[ii], rob_head)))
                             older_store_pending = 1'b1;
                     end
                 end
-                if (iq_valid[ii] && iq_rs1_ready[ii] && iq_rs2_ready[ii] && !older_store_pending) begin
-                    if (!issue_found || iq_age[ii] > oldest_age) begin
+`ifdef CFG_INORDER
+                // Measurement build (scripts/ablation.sh): strict program
+                // order, an entry waits for every older entry in the queue
+                for (si = 0; si < `IQ_DEPTH; si = si + 1)
+                    if (iq_valid[si] && (rel_age(iq_rob_idx[si], rob_head) < rel_age(iq_rob_idx[ii], rob_head)))
+                        older_store_pending = 1'b1;
+`endif
+                if (iq_valid[ii] && rs1_ok[ii] && rs2_ok[ii] && !older_store_pending &&
+                    !(iq_is_muldiv[ii] && !mdu_ready)) begin
+                    if (!issue_found || rel_age(iq_rob_idx[ii], rob_head) < oldest_age) begin
                         issue_slot  = ii[2:0];
                         issue_found = 1'b1;
-                        oldest_age  = iq_age[ii];
+                        oldest_age  = rel_age(iq_rob_idx[ii], rob_head);
                     end
                 end
             end
@@ -159,7 +210,16 @@ module issue_queue (
     wire do_dispatch = dispatch_en && free_found && !iq_full;
 
     always @(posedge clk or negedge rst_n) begin
-        if (!rst_n || flush) begin
+        if (!rst_n) begin
+            valid_count <= 4'd0;
+            issue_valid <= 1'b0;
+            for (k = 0; k < `IQ_DEPTH; k = k + 1) begin
+                iq_valid[k]     <= 1'b0;
+                iq_rs1_ready[k] <= 1'b0;
+                iq_rs2_ready[k] <= 1'b0;
+                iq_age[k]       <= 4'd0;
+            end
+        end else if (flush) begin
             valid_count <= 4'd0;
             issue_valid <= 1'b0;
             for (k = 0; k < `IQ_DEPTH; k = k + 1) begin
@@ -199,8 +259,8 @@ module issue_queue (
                 issue_fu_type         <= iq_fu_type[issue_slot];
                 issue_alu_op          <= iq_alu_op[issue_slot];
                 issue_phys_rd         <= iq_phys_rd[issue_slot];
-                issue_rs1_data        <= iq_rs1_data[issue_slot];
-                issue_rs2_data        <= iq_rs2_data[issue_slot];
+                issue_rs1_data        <= iq_rs1_ready[issue_slot] ? iq_rs1_data[issue_slot] : cdb_data;
+                issue_rs2_data        <= iq_rs2_ready[issue_slot] ? iq_rs2_data[issue_slot] : cdb_data;
                 issue_imm             <= iq_imm[issue_slot];
                 issue_pc              <= iq_pc[issue_slot];
                 issue_rob_idx         <= iq_rob_idx[issue_slot];
@@ -209,6 +269,7 @@ module issue_queue (
                 issue_is_store        <= iq_is_store[issue_slot];
                 issue_is_jump         <= iq_is_jump[issue_slot];
                 issue_writes_rd       <= iq_writes_rd[issue_slot];
+                issue_is_muldiv       <= iq_is_muldiv[issue_slot];
                 issue_uses_rs2        <= iq_uses_rs2[issue_slot];
                 issue_predicted_taken <= iq_pred_taken[issue_slot];
                 issue_predicted_target<= iq_pred_tgt[issue_slot];
@@ -237,6 +298,7 @@ module issue_queue (
                 iq_is_store[free_slot]  <= dispatch_is_store;
                 iq_is_jump[free_slot]   <= dispatch_is_jump;
                 iq_writes_rd[free_slot] <= dispatch_writes_rd;
+                iq_is_muldiv[free_slot] <= dispatch_is_muldiv;
                 iq_uses_rs2[free_slot]  <= dispatch_uses_rs2;
                 iq_pred_taken[free_slot]<= dispatch_predicted_taken;
                 iq_pred_tgt[free_slot]  <= dispatch_predicted_target;

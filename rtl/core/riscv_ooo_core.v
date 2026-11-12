@@ -16,9 +16,11 @@ module riscv_ooo_core (
 
     // I-Cache interface
     output wire [31:0] icache_addr,
+    output wire [31:0] icache_next_addr,   // predicted PC after icache_addr
     input  wire [31:0] icache_rdata,
     output wire        icache_req,
     input  wire        icache_ack,
+    output wire        icache_flush,       // FENCE.I: discard every line of the I-cache
 
     // D-Cache interface
     output wire [31:0] dcache_addr,
@@ -27,7 +29,8 @@ module riscv_ooo_core (
     output wire        dcache_req,
     output wire        dcache_wr,
     input  wire        dcache_ack,
-    output wire [2:0]  dcache_mem_type
+    output wire [2:0]  dcache_mem_type,
+    output wire [3:0]  dcache_amo        // `AMO_* code of an atomic access, else 0
 );
 
     // ========================================================================
@@ -52,8 +55,18 @@ module riscv_ooo_core (
     wire [1:0]  dec_fu_type;
     wire [2:0]  dec_mem_type;
     wire        dec_is_branch, dec_is_load, dec_is_store, dec_is_jump;
-    wire        dec_uses_rs1, dec_uses_rs2, dec_writes_rd;
+    wire        dec_uses_rs1, dec_uses_rs2;
     wire        dec_illegal, dec_valid;
+    wire        dec_writes_rd_raw;
+    wire        dec_is_csr, dec_csr_uimm, dec_is_ecall, dec_is_ebreak, dec_is_mret;
+    wire        dec_is_amo, dec_is_fence, dec_is_muldiv;
+    wire        iq_is_muldiv;
+    wire        mdu_busy, mdu_result_valid;
+    wire [31:0] mdu_result_data;
+    wire [5:0]  mdu_result_phys_rd;
+    wire [3:0]  mdu_result_rob_idx;
+    wire [3:0]  dec_amo_op;
+    wire [1:0]  dec_csr_op;
 
     // --- Rename outputs ---
     wire [5:0]  ren_phys_rs1, ren_phys_rs2, ren_phys_rd_new, ren_phys_rd_old;
@@ -102,6 +115,13 @@ module riscv_ooo_core (
     wire [5:0]  lsu_result_phys_rd;
     wire [3:0]  lsu_result_rob_idx;
     wire        lsu_full;
+    wire        lsu_ready;
+    wire [3:0]  rob_head_raw;
+    // Age reference for IQ/LSQ ordering. commit_valid/commit_rob_idx are
+    // registered, so for one cycle after a commit the ROB head has already
+    // moved past an entry the LSQ has not yet marked committed. Using the
+    // just-committed index keeps that entry the oldest during that cycle.
+    wire [3:0]  rob_head = rob_commit_valid ? rob_commit_idx : rob_head_raw;
 
     // --- CDB (Common Data Bus) ---
     wire        cdb_valid;
@@ -111,38 +131,177 @@ module riscv_ooo_core (
     wire        cdb_mispredicted;
     wire [31:0] cdb_branch_target;
 
+    // ========================================================================
+    // System instructions: CSR access, ECALL/EBREAK/MRET, illegal instructions
+    // ========================================================================
+    // These are serialized: one dispatches only when the ROB is empty, and
+    // nothing dispatches behind it until it retires (or traps). That makes CSR
+    // reads/writes non-speculative and gives precise traps with little logic.
+    wire        rob_empty;
+    wire        rob_trap_commit;
+    wire [31:0] csr_rdata, csr_mtvec, csr_mepc;
+    wire        csr_rvalid, csr_rreadonly;
+
+    wire [11:0] csr_addr   = dec_imm[11:0];
+    wire        csr_src_x0 = (dec_rs1 == 5'd0);           // RS/RC with x0/0 do not write
+    wire        csr_writes = (dec_csr_op == 2'b01) || !csr_src_x0;
+    wire        csr_bad    = dec_is_csr && (!csr_rvalid || (csr_rreadonly && csr_writes));
+    wire        dec_trap   = dec_valid && (dec_illegal || dec_is_ecall || dec_is_ebreak ||
+                                           dec_is_mret || csr_bad);
+    // Serialized: dispatched only into an empty ROB, nothing younger until it
+    // retires. Atomics and fences are serialized too, which makes each one a
+    // full fence: older stores drain first (the LSU writes committed stores
+    // before it issues any load), younger accesses wait.
+    wire        dec_serial = dec_valid && (dec_trap || dec_is_csr || dec_is_amo || dec_is_fence);
+    // FENCE.I (funct3 001) also waits until every older store has reached the
+    // data cache, empties the I-cache when it executes, and restarts fetch at
+    // the next instruction when it commits (it is completed as a mispredicted
+    // jump to pc + 4). Fetch then reads lines again through the bus, which
+    // returns the newest copy, so code written by this hart's stores is seen.
+    wire        dec_is_fencei = dec_is_fence && (fd_instr[14:12] == 3'b001);
+    wire        lsu_empty;
+    reg         fencei_r;           // the serialized instruction in flight is a FENCE.I
+    reg  [31:0] fencei_npc;
+    wire        dec_no_iq  = dec_trap || dec_is_csr;      // executed at dispatch / commit
+    wire        dec_writes_rd = dec_writes_rd_raw && !dec_trap;
+
+    reg         ser_busy;           // a serialized instruction is in flight
+    reg  [3:0]  amo_op_r;           // its AMO code (the only memory op in flight)
+    reg         trap_is_mret;
+    reg  [31:0] trap_cause, trap_pc, trap_tval;
+    wire        serial_stall = dec_valid && (ser_busy || (dec_serial && !rob_empty) ||
+                                             (dec_is_fencei && !lsu_empty));
+
+    // CSR execution (at dispatch; result written to the CDB next cycle)
+    wire [31:0] csr_src  = dec_csr_uimm ? {27'd0, dec_rs1} : rf_rs1_data;
+    reg  [31:0] csr_new;
+    always @(*) begin
+        case (dec_csr_op)
+            2'b01:   csr_new = csr_src;
+            2'b10:   csr_new = csr_rdata | csr_src;
+            default: csr_new = csr_rdata & ~csr_src;
+        endcase
+    end
+    wire        csr_exec = dispatch_en && dec_is_csr && !dec_trap;
+    reg         csr_wb_valid, csr_wb_writes;
+    reg  [31:0] csr_wb_data;
+    reg  [5:0]  csr_wb_phys;
+    reg  [3:0]  csr_wb_rob;
+
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            ser_busy <= 1'b0; csr_wb_valid <= 1'b0; amo_op_r <= `AMO_NONE;
+            fencei_r <= 1'b0; fencei_npc <= 32'd0;
+            trap_is_mret <= 1'b0; trap_cause <= 32'd0; trap_pc <= 32'd0; trap_tval <= 32'd0;
+        end else begin
+            csr_wb_valid <= csr_exec;
+            if (csr_exec) begin
+                csr_wb_data   <= csr_rdata;
+                csr_wb_phys   <= ren_phys_rd_new;
+                csr_wb_rob    <= rob_alloc_idx;
+                csr_wb_writes <= dec_writes_rd;
+            end
+            if (pipeline_flush || rob_commit_valid) begin
+                ser_busy <= 1'b0;
+                amo_op_r <= `AMO_NONE;
+                fencei_r <= 1'b0;
+            end
+            if (dispatch_en && dec_serial) begin
+                ser_busy <= 1'b1;
+                amo_op_r <= dec_is_amo ? dec_amo_op : `AMO_NONE;
+                fencei_r   <= dec_is_fencei;
+                fencei_npc <= fd_pc + 32'd4;
+            end
+            if (dispatch_en && dec_trap) begin
+                trap_is_mret <= dec_is_mret;
+                trap_pc      <= fd_pc;
+                trap_cause   <= dec_is_ecall  ? 32'd11 :           // ECALL from M-mode
+                                dec_is_ebreak ? 32'd3  : 32'd2;    // breakpoint / illegal
+                trap_tval    <= dec_is_ebreak ? fd_pc :
+                                (dec_is_ecall || dec_is_mret) ? 32'd0 : fd_instr;
+            end
+        end
+    end
+
+    csr_file u_csr (
+        .clk         (clk),
+        .rst_n       (rst_n),
+        .hartid      (core_id),
+        .raddr       (csr_addr),
+        .rdata       (csr_rdata),
+        .rvalid      (csr_rvalid),
+        .rreadonly   (csr_rreadonly),
+        .we          (csr_exec && csr_writes),
+        .waddr       (csr_addr),
+        .wdata       (csr_new),
+        .trap_enter  (rob_trap_commit && !trap_is_mret),
+        .trap_cause  (trap_cause),
+        .trap_pc     (trap_pc),
+        .trap_tval   (trap_tval),
+        .trap_mret   (rob_trap_commit && trap_is_mret),
+        .instret_inc (rob_commit_valid),
+        .mtvec_o     (csr_mtvec),
+        .mepc_o      (csr_mepc)
+    );
+
     // --- Pipeline control computation ---
-    assign pipeline_stall = rob_full || iq_full || lsu_full || !ren_ready;
+    // (A full load/store queue does not stall dispatch: loads and stores wait
+    // in the issue queue until it has room, see lsq_ready.)
+    assign pipeline_stall = rob_full || iq_full || !ren_ready || serial_stall;
     assign pipeline_flush = rob_flush_out;
     assign flush_redirect_pc = rob_flush_redirect_pc;
 
-    // --- Track in-flight load to prevent CDB/ROB completion collision ---
-    reg load_in_flight;
-    always @(posedge clk or negedge rst_n) begin
-        if (!rst_n || pipeline_flush)
-            load_in_flight <= 1'b0;
-        else if (lsu_result_valid)
-            load_in_flight <= 1'b0;
-        else if (iq_issue_valid && iq_is_load)
-            load_in_flight <= 1'b1;
-    end
-
-    wire iq_issue_stall = load_in_flight || (iq_issue_valid && iq_is_load);
+    // --- One result per cycle ---
+    // The ROB completion port and the CDB carry one result per cycle. The
+    // instruction executing this cycle (ALU, branch, jump, store) cannot wait,
+    // so it goes first; a load result that arrives in the same cycle is held
+    // by the load/store unit and the issue queue skips one cycle, which
+    // leaves the next cycle free for it. Everything else keeps issuing while
+    // loads are in flight (review bug 12: issue used to freeze for the whole
+    // load, and a load waiting for an older store could then wait for ever
+    // behind instructions that were not allowed to issue).
+    // A multiply/divide result waits the same way, behind load results.
+    wire exec_valid     = iq_issue_valid && !iq_is_load && !iq_is_muldiv;
+    wire lsu_accept     = lsu_result_valid && !exec_valid && !csr_wb_valid;
+    wire mdu_accept     = mdu_result_valid && !exec_valid && !csr_wb_valid && !lsu_result_valid;
+    wire iq_issue_stall = (lsu_result_valid && !lsu_accept) || (mdu_result_valid && !mdu_accept);
+    wire mdu_start      = iq_issue_valid && iq_is_muldiv;
 
     // --- CDB mux: ALU/Jump results vs Load results ---
-    wire alu_exec_valid = iq_issue_valid && !iq_is_load && !iq_is_store;
+    wire alu_exec_valid = iq_issue_valid && !iq_is_load && !iq_is_store && !iq_is_muldiv;
     wire alu_cdb_valid  = alu_exec_valid && iq_writes_rd;
 
-    assign cdb_valid   = alu_cdb_valid || lsu_result_valid;
-    assign cdb_phys_rd = lsu_result_valid ? lsu_result_phys_rd : iq_phys_rd;
-    assign cdb_data    = lsu_result_valid ? lsu_result_data :
+    // (A CSR writeback never collides with the others: it is serialized, so the
+    // IQ and LSU have nothing in flight that cycle.)
+    assign cdb_valid   = alu_cdb_valid || lsu_accept || mdu_accept || (csr_wb_valid && csr_wb_writes);
+    assign cdb_phys_rd = csr_wb_valid ? csr_wb_phys :
+                         lsu_accept ? lsu_result_phys_rd :
+                         mdu_accept ? mdu_result_phys_rd : iq_phys_rd;
+    assign cdb_data    = csr_wb_valid ? csr_wb_data :
+                         lsu_accept ? lsu_result_data :
+                         mdu_accept ? mdu_result_data :
                          ((iq_is_branch || iq_is_jump) ? br_link_addr : alu_result);
-    assign cdb_rob_idx = lsu_result_valid ? lsu_result_rob_idx : iq_rob_idx;
-    assign cdb_mispredicted  = (iq_issue_valid && (iq_is_branch || iq_is_jump)) ? br_mispredicted : 1'b0;
-    assign cdb_branch_target = br_target;
+    assign cdb_rob_idx = csr_wb_valid ? csr_wb_rob :
+                         lsu_accept ? lsu_result_rob_idx :
+                         mdu_accept ? mdu_result_rob_idx : iq_rob_idx;
+    wire   fencei_exec       = exec_valid && fencei_r;
+    assign icache_flush      = fencei_exec;
+    assign cdb_mispredicted  = (iq_issue_valid && (iq_is_branch || iq_is_jump)) ? br_mispredicted : fencei_exec;
+    // Where to restart if the prediction was wrong: the target if the branch
+    // is taken, the next instruction if it was predicted taken and is not
+    assign cdb_branch_target = fencei_r ? fencei_npc : br_taken ? br_target : br_link_addr;
+
+    // Calls and returns, for the return address stack (same rule as the
+    // pre-decode in fetch_unit: x1 and x5 are the link registers)
+    wire dec_rd_link  = (dec_rd  == 5'd1) || (dec_rd  == 5'd5);
+    wire dec_rs1_link = (dec_rs1 == 5'd1) || (dec_rs1 == 5'd5);
+    wire dec_is_call  = dec_is_jump && dec_rd_link;
+    wire dec_is_ret   = dec_is_jump && (dec_opcode == 7'b1100111) && dec_rs1_link && !dec_rd_link;
+    wire rob_commit_is_call, rob_commit_is_ret;
+    wire exec_is_jalr = iq_is_jump && (iq_alu_op == `ALU_ADD);
 
     // ROB completion also fires for stores, branches, and x0-dest instructions
-    wire rob_complete_en = (iq_issue_valid && !iq_is_load) || lsu_result_valid;
+    wire rob_complete_en = exec_valid || lsu_accept || mdu_accept || csr_wb_valid;
 
     // --- Decode valid gated by stall ---
     wire dispatch_en = dec_valid && !pipeline_stall && !pipeline_flush;
@@ -155,7 +314,9 @@ module riscv_ooo_core (
     reg [31:0] fd_pred_target;
 
     always @(posedge clk or negedge rst_n) begin
-        if (!rst_n || pipeline_flush) begin
+        if (!rst_n) begin
+            fd_valid <= 1'b0;
+        end else if (pipeline_flush) begin
             fd_valid <= 1'b0;
         end else if (!pipeline_stall) begin
             fd_valid       <= fetch_valid;
@@ -185,10 +346,14 @@ module riscv_ooo_core (
         .instr_valid      (fetch_valid),
         .predicted_taken  (fetch_predicted_taken),
         .predicted_target (fetch_predicted_target),
-        .btb_update_en    (pipeline_flush),
-        .btb_update_pc    (iq_pc),
-        .btb_update_target(br_target),
-        .btb_update_taken (br_taken)
+        .next_pc          (icache_next_addr),
+        .bp_update_en     (iq_issue_valid && (iq_is_branch || exec_is_jalr)),
+        .bp_update_jalr   (exec_is_jalr),
+        .bp_update_pc     (iq_pc),
+        .bp_update_target (br_target),
+        .bp_update_taken  (br_taken),
+        .commit_call      (rob_commit_valid && rob_commit_is_call),
+        .commit_ret       (rob_commit_valid && rob_commit_is_ret)
     );
 
     assign icache_addr = fetch_pc;
@@ -212,8 +377,18 @@ module riscv_ooo_core (
         .is_jump     (dec_is_jump),
         .uses_rs1    (dec_uses_rs1),
         .uses_rs2    (dec_uses_rs2),
-        .writes_rd   (dec_writes_rd),
+        .writes_rd   (dec_writes_rd_raw),
         .illegal_instr(dec_illegal),
+        .is_csr      (dec_is_csr),
+        .csr_op      (dec_csr_op),
+        .csr_uimm    (dec_csr_uimm),
+        .is_ecall    (dec_is_ecall),
+        .is_ebreak   (dec_is_ebreak),
+        .is_mret     (dec_is_mret),
+        .is_amo      (dec_is_amo),
+        .amo_op      (dec_amo_op),
+        .is_fence    (dec_is_fence),
+        .is_muldiv   (dec_is_muldiv),
         .decoded_valid(dec_valid)
     );
 
@@ -263,7 +438,7 @@ module riscv_ooo_core (
     issue_queue u_iq (
         .clk                    (clk),
         .rst_n                  (rst_n),
-        .dispatch_en            (dispatch_en),
+        .dispatch_en            (dispatch_en && !dec_no_iq),
         .dispatch_fu_type       (dec_fu_type),
         .dispatch_alu_op        (dec_alu_op),
         .dispatch_phys_rd       (ren_phys_rd_new),
@@ -286,6 +461,7 @@ module riscv_ooo_core (
         .dispatch_mem_type      (dec_mem_type),
         .dispatch_is_jump       (dec_is_jump),
         .dispatch_writes_rd     (dec_writes_rd),
+        .dispatch_is_muldiv     (dec_is_muldiv),
         .cdb_valid              (cdb_valid),
         .cdb_phys_rd            (cdb_phys_rd),
         .cdb_data               (cdb_data),
@@ -309,6 +485,10 @@ module riscv_ooo_core (
         .issue_mem_type         (iq_mem_type),
         .iq_full                (iq_full),
         .issue_stall            (iq_issue_stall),
+        .mem_ready              (lsu_ready),
+        .mdu_ready              (!mdu_busy && !mdu_start),
+        .issue_is_muldiv        (iq_is_muldiv),
+        .rob_head               (rob_head),
         .flush                  (pipeline_flush)
     );
 
@@ -316,7 +496,7 @@ module riscv_ooo_core (
     alu u_alu (
         .alu_op    (iq_alu_op),
         .operand_a (iq_rs1_data),
-        .operand_b ((iq_uses_rs2 && !iq_is_store && !iq_is_branch) ? iq_rs2_data : iq_imm),
+        .operand_b ((iq_uses_rs2 && !iq_is_store && !iq_is_branch && !iq_is_load) ? iq_rs2_data : iq_imm),
         .result    (alu_result),
         .zero_flag (alu_zero)
     );
@@ -330,13 +510,32 @@ module riscv_ooo_core (
         .imm              (iq_imm),
         .is_branch        (iq_is_branch),
         .is_jump          (iq_is_jump),
-        .is_jalr          (iq_is_jump && (iq_alu_op == `ALU_ADD)),
+        .is_jalr          (exec_is_jalr),
         .predicted_taken  (iq_predicted_taken),
         .predicted_target (iq_predicted_target),
         .branch_taken     (br_taken),
         .branch_target    (br_target),
         .mispredicted     (br_mispredicted),
         .link_addr        (br_link_addr)
+    );
+
+    // --- Multiply / divide (RV32M) ---
+    muldiv_unit u_mdu (
+        .clk            (clk),
+        .rst_n          (rst_n),
+        .flush          (pipeline_flush),
+        .start          (mdu_start),
+        .op             (iq_alu_op[2:0]),
+        .a              (iq_rs1_data),
+        .b              (iq_rs2_data),
+        .phys_rd        (iq_phys_rd),
+        .rob_idx        (iq_rob_idx),
+        .busy           (mdu_busy),
+        .result_valid   (mdu_result_valid),
+        .result_data    (mdu_result_data),
+        .result_phys_rd (mdu_result_phys_rd),
+        .result_rob_idx (mdu_result_rob_idx),
+        .result_accept  (mdu_accept)
     );
 
     // --- Reorder Buffer ---
@@ -349,10 +548,14 @@ module riscv_ooo_core (
         .alloc_arch_rd         (dec_rd),
         .alloc_phys_rd_old     (ren_phys_rd_old),
         .alloc_writes_rd       (dec_writes_rd),
-        .alloc_is_branch       (dec_is_branch || dec_is_jump),
+        .alloc_is_branch       (dec_is_branch || dec_is_jump || dec_is_fencei),   // entries that may redirect at commit
         .alloc_is_store        (dec_is_store),
         .alloc_is_load         (dec_is_load),
+        .alloc_trap            (dec_trap),
+        .alloc_is_call         (dec_is_call),
+        .alloc_is_ret          (dec_is_ret),
         .alloc_idx             (rob_alloc_idx),
+        .head_idx              (rob_head_raw),
         .rob_full              (rob_full),
         .complete_en           (rob_complete_en),
         .complete_idx          (cdb_rob_idx),
@@ -368,7 +571,12 @@ module riscv_ooo_core (
         .commit_is_store       (rob_commit_is_store),
         .commit_result         (rob_commit_result),
         .commit_rob_idx        (rob_commit_idx),
+        .commit_is_call        (rob_commit_is_call),
+        .commit_is_ret         (rob_commit_is_ret),
         .flush_out             (rob_flush_out),
+        .trap_commit           (rob_trap_commit),
+        .trap_target           (trap_is_mret ? csr_mepc : csr_mtvec),
+        .empty                 (rob_empty),
         .flush_redirect_pc     (rob_flush_redirect_pc),
         .flush_in              (1'b0)  // External flush not used
     );
@@ -383,6 +591,7 @@ module riscv_ooo_core (
         .addr           (alu_result),   // Address computed by ALU (base + offset)
         .store_data     (iq_rs2_data),
         .mem_type       (iq_mem_type),
+        .amo_op         (amo_op_r),
         .rob_idx        (iq_rob_idx),
         .phys_rd        (iq_phys_rd),
         .dcache_addr    (dcache_addr),
@@ -392,12 +601,18 @@ module riscv_ooo_core (
         .dcache_wr      (dcache_wr),
         .dcache_ack     (dcache_ack),
         .dcache_mem_type(dcache_mem_type),
+        .dcache_amo     (dcache_amo),
         .result_valid   (lsu_result_valid),
         .result_data    (lsu_result_data),
         .result_phys_rd (lsu_result_phys_rd),
         .result_rob_idx (lsu_result_rob_idx),
+        .result_accept  (lsu_accept),
         .lsq_full       (lsu_full),
+        .lsq_empty      (lsu_empty),
+        .lsq_ready      (lsu_ready),
         .commit_store_en(rob_commit_valid && rob_commit_is_store),
+        .commit_rob_idx (rob_commit_idx),
+        .rob_head       (rob_head),
         .flush          (pipeline_flush)
     );
 

@@ -78,8 +78,9 @@
 // ----------------------------------------------------------------------------
 // Main Memory Parameters
 // ----------------------------------------------------------------------------
-`define MEM_SIZE_BYTES    65536  // 64 KB for simulation
-`define MEM_ADDR_BITS       16  // log2(65536)
+`ifndef MEM_SIZE_BYTES
+`define MEM_SIZE_BYTES    65536  // 64 KB (override with +define+MEM_SIZE_BYTES=131072)
+`endif
 `define MEM_LATENCY          5  // Cycles latency for memory access
 
 // ----------------------------------------------------------------------------

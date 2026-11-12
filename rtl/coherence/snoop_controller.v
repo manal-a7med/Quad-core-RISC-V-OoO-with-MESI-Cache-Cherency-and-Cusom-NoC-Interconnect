@@ -17,6 +17,7 @@ module snoop_controller (
     input  wire [31:0]  req_addr,
     input  wire [255:0] req_wdata,
     input  wire [1:0]   req_core_id,
+    input  wire         req_snoop_all,      // request is not from an L1D (I-cache fetch): snoop all four
     
     // Snoop interface to all 4 cores
     output reg  [3:0]   snoop_valid,
@@ -53,7 +54,7 @@ module snoop_controller (
     reg         saved_resp_shared;
     reg         saved_from_snoop;
 
-    wire [3:0]  snoop_mask = ~(4'b0001 << req_core_id);
+    wire [3:0]  snoop_mask = req_snoop_all ? 4'b1111 : ~(4'b0001 << req_core_id);
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -175,7 +176,7 @@ module snoop_controller (
         endcase
     end
     
-`ifdef SIM
+`ifdef BUS_DEBUG   // +define+BUS_DEBUG for a transaction log
     always @(posedge clk) begin
         if (state != next_state) $display("[Snoop Controller] State: %0d -> %0d", state, next_state);
     end

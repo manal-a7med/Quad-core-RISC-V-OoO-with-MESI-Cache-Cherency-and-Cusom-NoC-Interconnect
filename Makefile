@@ -1,84 +1,241 @@
 # =============================================================================
-# Makefile — Quad-Core Out-of-Order RISC-V Processor & MESI Coherence Animator
+# Makefile: Quad-Core Out-of-Order RISC-V Processor with MESI coherence
 # =============================================================================
-# Targets:
-#   make all       : Run all 7 Verilog RTL testbenches + generate MESI animation
-#   make animate   : Verify RTL, run terminal animation, and export animated GIF
-#   make gui       : Launch interactive desktop MESI Coherence animation window
-#   make sim       : Compile and run all 7 Verilog testbenches
-#   make clean     : Remove compiled simulation binaries (.vvp) and logs
+#   make sim         Run all RTL testbenches (fails if any check fails)
+#   make sim-<name>  Run one testbench (mesi arbiter cache core dep corner quad repro)
+#   make isa         rv32ui, rv32um and rv32ua riscv-tests and system tests on one core (RISCV_TESTS=<checkout>)
+#   make soc-isa     the same programs on the full 4-core SoC with caches (after make isa)
+#   make bench       riscv-tests benchmarks on the 4-core SoC (Verilator; RISCV_TESTS=<checkout>)
+#   make ablation    The benchmarks on builds with one feature off (prediction, OoO issue, MESI E state)
+#   make coh-random  Constrained-random coherence test of the memory system (SEEDS, OPS)
+#   make coh-mutants Check that coh-random fails on six designs with injected coherence bugs
+#   make sw          Build the demo programs in sw/ (hello, parsum, atomics, prodcons, litmus, memstress, selfmod)
+#   make soc-run PROG=hello   Run a demo program on the full SoC (UART printed)
+#   make fpga-sim PROG=hello  Board-level simulation of fpga_top (UART decoded from the pin)
+#   make fpga PROG=hello      Vivado bitstream for the Nexys A7-100T (CLKOUT_DIV=20: 50 MHz)
+#   make program              Load build/vivado/fpga_top.bit onto the board
+#   make lint        Verilator lint of the core (errors fail; warnings listed)
+#   make lint-soc    Verilator lint of quad_core_top (errors fail)
+#   make synth       Yosys generic synthesis of one core (fast check, used by CI)
+#   make synth-soc   Yosys generic synthesis of quad_core_top
+#   make synth-fpga  Yosys synth_xilinx of fpga_top (about 15 min), prints LUT/FF/BRAM
+#                    use against the XC7A100T
+#   make synth-fpga-core  Artix-7 LUT/FF estimate for one core (used by results)
+#   make results     Regenerate docs/results/index.html (RISCV_TESTS=<checkout>)
+#   make animate     MESI terminal walkthrough + animated GIF
+#   make gui         Interactive MESI animation window
+#   make bench-check Compare build/bench/results.txt with the committed reference numbers
+#   make regress     Everything except the slow synthesis and benchmarks (RISCV_TESTS=<checkout>)
+#   make clean       Remove build outputs
+#
+# Tools come from PATH. On Windows override, e.g.
+#   make IVERILOG=C:/iverilog/bin/iverilog.exe VVP=C:/iverilog/bin/vvp.exe sim
 # =============================================================================
 
-IVERILOG  ?= C:/iverilog/bin/iverilog.exe
-VVP       ?= C:/iverilog/bin/vvp.exe
-PYTHON    ?= python
+IVERILOG ?= iverilog
+VVP      ?= vvp
+VERILATOR ?= verilator
+YOSYS    ?= yosys
+PYTHON   ?= python3
 
-INC_FLAGS  = -DSIM -I rtl/core -I rtl/cache
-OUT_DIR    = sim/out
-GIF_OUT    = docs/mesi_coherence_animation.gif
+INC_FLAGS = -g2012 -DSIM -I rtl/core -I rtl/cache -I verif
+OUT_DIR   = build
+GIF_OUT   = docs/mesi_coherence_animation.gif
+CHECK     = sh scripts/check_log.sh
 
-CORE_RTL   = $(wildcard rtl/core/*.v)
-CACHE_RTL  = $(wildcard rtl/cache/*.v)
-COH_RTL    = $(wildcard rtl/coherence/*.v)
-MEM_RTL    = $(wildcard rtl/memory/*.v)
-TOP_RTL    = rtl/top/quad_core_top.v
+CORE_RTL  = $(sort $(wildcard rtl/core/*.v))
+CACHE_RTL = $(sort $(filter-out rtl/cache/cache_controller.v,$(wildcard rtl/cache/*.v)))
+COH_RTL   = $(sort $(filter-out rtl/coherence/mesi_protocol.v,$(wildcard rtl/coherence/*.v)))
+MEM_RTL   = $(sort $(wildcard rtl/memory/*.v))
+IO_RTL    = $(sort $(wildcard rtl/io/*.v))
+SOC_RTL   = $(CORE_RTL) $(CACHE_RTL) $(COH_RTL) $(MEM_RTL) $(IO_RTL) rtl/top/quad_core_top.v
 
-.PHONY: all animate gui sim sim-mesi sim-arbiter sim-cache sim-core sim-dep sim-corner sim-quad clean help
+TESTS = mesi arbiter cache core dep corner quad
 
-all: sim animate
+.PHONY: all sim $(addprefix sim-,$(TESTS)) sim-repro isa synth soc-isa bench ablation coh-random coh-mutants bench-check regress sw soc-run fpga-sim fpga program lint lint-soc synth-soc synth-fpga results animate gui clean help
+
+all: sim
 
 help:
-	@echo "=========================================================================="
-	@echo " Quad-Core RISC-V OoO SoC & MESI Coherence Automation Targets"
-	@echo "=========================================================================="
-	@echo "  make animate   - Run terminal walkthrough + generate animated GIF ($(GIF_OUT))"
-	@echo "  make gui       - Open interactive desktop MESI animation (Play/Pause/Step)"
-	@echo "  make sim       - Compile and run all 7 Verilog hardware testbenches"
-	@echo "  make all       - Run full RTL verification suite + MESI animation"
-	@echo "  make clean     - Clean simulation binaries and temporary files"
-	@echo "=========================================================================="
+	@awk 'NR > 3 && /^# Tools/ { exit } NR > 3' Makefile
 
-# -----------------------------------------------------------------------------
-# Python Visual Coherence Animation Targets
-# -----------------------------------------------------------------------------
+$(OUT_DIR):
+	@mkdir -p $(OUT_DIR)
+
+# run(name, sources): compile, simulate inside build/ (VCDs land there), check log
+define run
+	$(IVERILOG) $(INC_FLAGS) -o $(OUT_DIR)/$(1).vvp $(2)
+	cd $(OUT_DIR) && $(VVP) -n $(1).vvp | tee $(1).log
+	$(CHECK) $(OUT_DIR)/$(1).log
+endef
+
+sim: $(addprefix sim-,$(TESTS))
+	@echo "All testbenches passed."
+
+sim-mesi: | $(OUT_DIR)
+	$(call run,mesi,rtl/coherence/mesi_protocol.v tb/tb_mesi_coherence.v)
+sim-arbiter: | $(OUT_DIR)
+	$(call run,arbiter,rtl/coherence/bus_arbiter.v tb/tb_bus_arbiter.v)
+sim-cache: | $(OUT_DIR)
+	$(call run,cache,rtl/cache/l1_dcache.v tb/tb_cache.v)
+sim-core: | $(OUT_DIR)
+	$(call run,core,$(CORE_RTL) tb/tb_ooo_core.v)
+sim-dep: | $(OUT_DIR)
+	$(call run,dep,$(CORE_RTL) tb/tb_ooo_dependent_arith.v)
+sim-corner: | $(OUT_DIR)
+	$(call run,corner,$(CORE_RTL) tb/tb_ooo_corner_cases.v)
+sim-quad: | $(OUT_DIR)
+	$(call run,quad,$(SOC_RTL) tb/tb_quad_core.v)
+sim-repro: | $(OUT_DIR)
+	cp review/prog.hex $(OUT_DIR)/
+	$(call run,repro,$(CORE_RTL) review/tb_repro.v)
+
+# rv32ui riscv-tests (needs riscv64-unknown-elf-gcc and a riscv-tests checkout)
+RISCV_TESTS ?= ../riscv-tests
+isa:
+	sh verif/riscv-tests/run.sh $(RISCV_TESTS)
+
+LINT = $(VERILATOR) --lint-only -Wall -Wno-fatal -Irtl/core -Irtl/cache
+lint: | $(OUT_DIR)
+	$(LINT) --top-module riscv_ooo_core $(CORE_RTL) > $(OUT_DIR)/lint.log 2>&1 || true
+	@! grep "^%Error" $(OUT_DIR)/lint.log
+	@echo "lint: `grep -c '^%Warning' $(OUT_DIR)/lint.log` warnings, 0 errors (see $(OUT_DIR)/lint.log)"
+
+lint-soc: | $(OUT_DIR)
+	$(LINT) --top-module quad_core_top $(SOC_RTL) > $(OUT_DIR)/lint_soc.log 2>&1 || true
+	@! grep "^%Error" $(OUT_DIR)/lint_soc.log
+
+soc-isa:
+	sh scripts/soc_isa.sh
+
+# Verilator model of the SoC testbench: same cycle counts as iverilog, about
+# 40x faster. Used for the benchmarks.
+VL_FLAGS = --binary --timing -O3 -j 4 -Wno-fatal -Wno-lint -Wno-style -DSIM -Irtl/core -Irtl/cache -Iverif
+VL_CFG  ?= soc
+VL_DEFS ?=
+$(OUT_DIR)/vl_$(VL_CFG)/Vtb_soc: $(SOC_RTL) verif/soc/tb_soc.v
+	$(VERILATOR) $(VL_FLAGS) $(VL_DEFS) --top-module tb_soc -Mdir $(OUT_DIR)/vl_$(VL_CFG) $(SOC_RTL) verif/soc/tb_soc.v > /dev/null
+
+# riscv-tests benchmarks on the SoC (RISCV_TESTS=<checkout>); see scripts/bench.sh
+bench: $(OUT_DIR)/vl_soc/Vtb_soc
+	sh scripts/bench.sh $(RISCV_TESTS)
+
+# The benchmarks on five builds: full, no branch prediction, in-order issue,
+# neither, and MSI instead of MESI (see scripts/ablation.sh)
+ablation:
+	sh scripts/ablation.sh $(RISCV_TESTS)
+
+# Constrained-random coherence test: random loads, stores, amoadd and LR/SC
+# driven into the four L1D ports of the real memory system, every result
+# checked (see verif/coherence/tb_coh_random.v). OPS is per port.
+SEEDS ?= 1 2 3
+OPS   ?= 2000
+coh-random: $(OUT_DIR)/coh_random.vvp
+	@for s in $(SEEDS); do \
+	    $(VVP) -n $< +seed=$$s +ops=$(OPS) > $(OUT_DIR)/coh_random_$$s.log; \
+	    grep -E '^(ERROR|RESULT|coherence|  )' $(OUT_DIR)/coh_random_$$s.log; \
+	    grep -q 'RESULT PASS' $(OUT_DIR)/coh_random_$$s.log || exit 1; \
+	done
+
+# The random test must fail on each of six designs with a deliberate coherence bug
+coh-mutants:
+	sh scripts/coh_mutants.sh
+
+$(OUT_DIR)/coh_random.vvp: $(SOC_RTL) verif/coherence/tb_coh_random.v | $(OUT_DIR)
+	$(IVERILOG) $(INC_FLAGS) -DNO_UART_ECHO -o $@ $(SOC_RTL) verif/coherence/tb_coh_random.v
+
+# Demo programs (C, bare metal, all four harts). Each builds to
+#   build/sw/<prog>.hex       one 32-bit word per line (simulation)
+#   build/sw/<prog>.line.hex  one 256-bit line per line (FPGA memory image)
+RV_CC      ?= riscv64-unknown-elf-gcc
+RV_OBJCOPY ?= riscv64-unknown-elf-objcopy
+RV_OBJDUMP ?= riscv64-unknown-elf-objdump
+RV_CFLAGS   = -march=rv32ima_zicsr -mabi=ilp32 -O2 -ffreestanding -fno-builtin -nostdlib -nostartfiles \
+              -Wl,--no-warn-rwx-segments -Isw/common -T sw/common/link.ld
+SW_PROGS    = $(notdir $(filter-out sw/common sw/bench,$(wildcard sw/*)))
+PROG       ?= hello
+
+sw: $(foreach p,$(SW_PROGS),$(OUT_DIR)/sw/$(p).line.hex)
+
+$(OUT_DIR)/sw/%.line.hex: sw/%/*.c sw/common/*
+	@mkdir -p $(OUT_DIR)/sw
+	$(RV_CC) $(RV_CFLAGS) sw/common/crt0.S sw/$*/*.c -lgcc -o $(OUT_DIR)/sw/$*.elf
+	$(RV_OBJDUMP) -d $(OUT_DIR)/sw/$*.elf > $(OUT_DIR)/sw/$*.dis
+	$(RV_OBJCOPY) -O binary $(OUT_DIR)/sw/$*.elf $(OUT_DIR)/sw/$*.bin
+	od -An -v -tx4 -w4 $(OUT_DIR)/sw/$*.bin | tr -d ' ' > $(OUT_DIR)/sw/$*.hex
+	$(PYTHON) scripts/hex2line.py $(OUT_DIR)/sw/$*.hex $@
+
+$(OUT_DIR)/soc.vvp: $(SOC_RTL) verif/soc/tb_soc.v | $(OUT_DIR)
+	$(IVERILOG) $(INC_FLAGS) -o $@ $(SOC_RTL) verif/soc/tb_soc.v
+
+# Board-level simulation of fpga_top: program baked into memory, UART decoded
+# from the serial pin, 7-segment display read back from the pins
+fpga-sim: $(OUT_DIR)/sw/$(PROG).line.hex
+	$(IVERILOG) $(INC_FLAGS) -DNO_UART_ECHO -DMEM_INIT_FILE=\"$(OUT_DIR)/sw/$(PROG).line.hex\" -o $(OUT_DIR)/fpga_$(PROG).vvp \
+	    $(SOC_RTL) rtl/top/fpga_top.v verif/soc/tb_fpga.v
+	$(VVP) -n $(OUT_DIR)/fpga_$(PROG).vvp | tee $(OUT_DIR)/sw/$(PROG).fpga.log
+	@grep -q "RESULT PASS" $(OUT_DIR)/sw/$(PROG).fpga.log
+	@if [ -f sw/$(PROG)/expect.txt ]; then $(PYTHON) scripts/check_uart.py sw/$(PROG)/expect.txt $(OUT_DIR)/sw/$(PROG).fpga.log; fi
+
+# Vivado build for the Nexys A7-100T (bitstream with PROG preloaded), and
+# programming the board over USB (needs Vivado on PATH)
+VIVADO ?= vivado
+CLKOUT_DIV ?= 20
+fpga: $(OUT_DIR)/sw/$(PROG).line.hex
+	$(VIVADO) -mode batch -nojournal -log $(OUT_DIR)/vivado.log -source synth/build.tcl \
+	    -tclargs $(OUT_DIR)/sw/$(PROG).line.hex $(CLKOUT_DIV)
+program:
+	$(VIVADO) -mode batch -nojournal -nolog -source synth/program.tcl -tclargs $(OUT_DIR)/vivado/fpga_top.bit
+
+soc-run: $(OUT_DIR)/sw/$(PROG).line.hex $(OUT_DIR)/soc.vvp
+	$(VVP) -n $(OUT_DIR)/soc.vvp +hex=$(OUT_DIR)/sw/$(PROG).hex | tee $(OUT_DIR)/sw/$(PROG).log
+	@grep -q "RESULT PASS" $(OUT_DIR)/sw/$(PROG).log
+	@if [ -f sw/$(PROG)/expect.txt ]; then $(PYTHON) scripts/check_uart.py sw/$(PROG)/expect.txt $(OUT_DIR)/sw/$(PROG).log; fi
+
+synth: | $(OUT_DIR)
+	$(YOSYS) -q -l $(OUT_DIR)/synth.log -p "read_verilog -DSYNTHESIS -I rtl/core $(CORE_RTL); synth -top riscv_ooo_core; stat"
+	@! grep -E "^Latch inferred|ERROR" $(OUT_DIR)/synth.log
+	@grep -A3 "design hierarchy" $(OUT_DIR)/synth.log | tail -1; grep "Number of cells" $(OUT_DIR)/synth.log | tail -1
+
+synth-soc: | $(OUT_DIR)
+	$(YOSYS) -q -l $(OUT_DIR)/synth_soc.log -p "read_verilog -DSYNTHESIS -I rtl/core -I rtl/cache $(SOC_RTL); synth -top quad_core_top; stat" 
+
+synth-fpga: | $(OUT_DIR)
+	$(YOSYS) -q -l $(OUT_DIR)/synth_fpga.log -p "read_verilog -DSYNTHESIS -I rtl/core -I rtl/cache $(SOC_RTL) rtl/top/fpga_top.v; synth_xilinx -family xc7 -top fpga_top; stat"
+	@$(PYTHON) scripts/fpga_report.py $(OUT_DIR)/synth_fpga.log
+
+results:
+	sh scripts/viz/collect.sh $(RISCV_TESTS)
+	$(PYTHON) scripts/viz/make_results.py build/viz docs/results/index.html
+
+synth-fpga-core: | $(OUT_DIR)
+	$(YOSYS) -q -l $(OUT_DIR)/synth_fpga_core.log -p "read_verilog -DSYNTHESIS -I rtl/core $(CORE_RTL); synth_xilinx -family xc7 -top riscv_ooo_core; stat"
+
 animate:
 	$(PYTHON) scripts/mesi_visualizer.py --verify-rtl --cli --gif $(GIF_OUT)
-
 gui:
 	$(PYTHON) scripts/mesi_visualizer.py --gui
 
-# -----------------------------------------------------------------------------
-# Verilog RTL Simulation Targets
-# -----------------------------------------------------------------------------
-sim: sim-mesi sim-arbiter sim-cache sim-core sim-dep sim-corner sim-quad
+# Reference benchmark numbers (cycle counts match exactly with GCC 13.2.0)
+BENCH_REF ?= results/2026-11-12/bench.txt
+bench-check:
+	$(PYTHON) scripts/compare_bench.py $(BENCH_REF) $(OUT_DIR)/bench/results.txt
 
-sim-mesi:
-	$(IVERILOG) $(INC_FLAGS) -o $(OUT_DIR)/mesi_test.vvp rtl/coherence/mesi_protocol.v tb/tb_mesi_coherence.v
-	$(VVP) $(OUT_DIR)/mesi_test.vvp
-
-sim-arbiter:
-	$(IVERILOG) $(INC_FLAGS) -o $(OUT_DIR)/arbiter_test.vvp rtl/coherence/bus_arbiter.v tb/tb_bus_arbiter.v
-	$(VVP) $(OUT_DIR)/arbiter_test.vvp
-
-sim-cache:
-	$(IVERILOG) $(INC_FLAGS) -o $(OUT_DIR)/cache_test.vvp rtl/cache/l1_dcache.v tb/tb_cache.v
-	$(VVP) $(OUT_DIR)/cache_test.vvp
-
-sim-core:
-	$(IVERILOG) $(INC_FLAGS) -o $(OUT_DIR)/core_test.vvp $(CORE_RTL) tb/tb_ooo_core.v
-	$(VVP) $(OUT_DIR)/core_test.vvp
-
-sim-dep:
-	$(IVERILOG) $(INC_FLAGS) -o $(OUT_DIR)/dep_arith_test.vvp $(CORE_RTL) tb/tb_ooo_dependent_arith.v
-	$(VVP) $(OUT_DIR)/dep_arith_test.vvp
-
-sim-corner:
-	$(IVERILOG) $(INC_FLAGS) -o $(OUT_DIR)/corner_cases_test.vvp $(CORE_RTL) tb/tb_ooo_corner_cases.v
-	$(VVP) $(OUT_DIR)/corner_cases_test.vvp
-
-sim-quad:
-	$(IVERILOG) $(INC_FLAGS) -o $(OUT_DIR)/quad_test.vvp $(CORE_RTL) $(CACHE_RTL) $(COH_RTL) $(MEM_RTL) $(TOP_RTL) tb/tb_quad_core.v
-	$(VVP) $(OUT_DIR)/quad_test.vvp
+# Full functional regression: every check that needs no Vivado and no
+# Verilator benchmark run. Stops at the first failure.
+REGRESS_PROGS = hello parsum atomics prodcons litmus memstress selfmod
+regress:
+	$(MAKE) sim
+	$(MAKE) sim-repro
+	$(MAKE) isa RISCV_TESTS=$(RISCV_TESTS)
+	$(MAKE) soc-isa
+	@for p in $(REGRESS_PROGS); do $(MAKE) soc-run PROG=$$p > $(OUT_DIR)/regress_$$p.log 2>&1 || { tail -20 $(OUT_DIR)/regress_$$p.log; exit 1; }; \
+	    echo "soc-run $$p: PASS"; done
+	@for p in $(REGRESS_PROGS); do $(MAKE) fpga-sim PROG=$$p > $(OUT_DIR)/regress_fpga_$$p.log 2>&1 || { tail -20 $(OUT_DIR)/regress_fpga_$$p.log; exit 1; }; \
+	    echo "fpga-sim $$p: PASS"; done
+	$(MAKE) coh-random
+	$(MAKE) coh-mutants
+	@echo "regress: all checks passed"
 
 clean:
-	$(PYTHON) -c "import glob, os; [os.remove(f) for f in glob.glob('sim/out/*.vvp') + glob.glob('*.vvp') if os.path.exists(f)]"
+	rm -rf $(OUT_DIR) *.vcd *.vvp

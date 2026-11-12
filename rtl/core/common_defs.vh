@@ -88,6 +88,22 @@
 `define MEM_HALF_U    3'b101
 
 // ----------------------------------------------------------------------------
+// Atomic memory operations (RV32A), core -> L1 data cache (dcache_amo)
+// ----------------------------------------------------------------------------
+`define AMO_NONE      4'd0
+`define AMO_LR        4'd1
+`define AMO_SC        4'd2
+`define AMO_SWAP      4'd3
+`define AMO_ADD       4'd4
+`define AMO_XOR       4'd5
+`define AMO_AND       4'd6
+`define AMO_OR        4'd7
+`define AMO_MIN       4'd8
+`define AMO_MAX       4'd9
+`define AMO_MINU      4'd10
+`define AMO_MAXU      4'd11
+
+// ----------------------------------------------------------------------------
 // Functional Unit Types
 // ----------------------------------------------------------------------------
 `define FU_ALU        2'b00

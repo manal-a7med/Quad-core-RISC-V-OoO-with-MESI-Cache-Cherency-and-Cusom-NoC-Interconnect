@@ -111,7 +111,7 @@ module mesi_protocol (
         end
     end
 
-`ifdef SIM
+`ifdef BUS_DEBUG   // +define+BUS_DEBUG for a transaction log
     always @(posedge clk) begin
         if (proc_event_valid || bus_event_valid) begin
             $display("[MESI Protocol] State: %b -> %b | proc_ev: %b (v:%b) | bus_ev: %b (v:%b)", 

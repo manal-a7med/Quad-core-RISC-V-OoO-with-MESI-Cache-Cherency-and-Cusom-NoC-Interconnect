@@ -1,4 +1,4 @@
-﻿# Simulation waveforms and outputs
+# Simulation waveforms and outputs
 *.vcd
 *.vvp
 *.log
@@ -10,10 +10,13 @@ __pycache__/
 *.py[cod]
 *.class
 .venv/
-env/
+/env/
 
 # Editor / OS files
 .DS_Store
 Thumbs.db
 .vscode/
 .idea/
+
+# Build outputs
+build/

@@ -1,0 +1,9 @@
+# Keep LF line endings in the working tree on every platform. Shell scripts
+# and the Makefile fail under WSL or Linux if Windows converts them to CRLF.
+* text=auto eol=lf
+*.bat text eol=crlf
+*.gif binary
+*.jpg binary
+*.png binary
+*.pdf binary
+*.docx binary

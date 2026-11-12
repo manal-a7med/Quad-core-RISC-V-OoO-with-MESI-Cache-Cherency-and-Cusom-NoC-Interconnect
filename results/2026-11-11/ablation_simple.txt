@@ -1,0 +1,11 @@
+# make ablation, build 'simple' (see scripts/ablation.sh); same format as bench_p4.txt (the full design)
+dhrystone PASS cycles=772614 region=735050 instret=277029 branches=65813 mispredicts=48570 busupgr=0 bustx=581
+median PASS cycles=33337 region=11378 instret=4251 branches=3716 mispredicts=1997 busupgr=0 bustx=167
+multiply PASS cycles=121809 region=58141 instret=20897 branches=13718 mispredicts=12392 busupgr=0 bustx=61
+qsort PASS cycles=679410 region=345485 instret=123504 branches=68262 mispredicts=44334 busupgr=0 bustx=2669
+rsort PASS cycles=811864 region=358261 instret=171130 branches=21726 mispredicts=15471 busupgr=0 bustx=29271
+towers PASS cycles=20495 region=8115 instret=3751 branches=768 mispredicts=554 busupgr=0 bustx=17
+vvadd PASS cycles=20496 region=5567 instret=2413 branches=1211 mispredicts=855 busupgr=0 bustx=183
+memcpy PASS cycles=577312 region=253122 instret=80021 branches=38176 mispredicts=34115 busupgr=0 bustx=4021
+mt-vvadd PASS cycles=339679 region=108500 instret=- branches=31516 mispredicts=20131 busupgr=670 bustx=9177
+mt-matmul PASS cycles=27667 region=13728 instret=- branches=1531 mispredicts=826 busupgr=2 bustx=561

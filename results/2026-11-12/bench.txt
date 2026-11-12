@@ -1,0 +1,14 @@
+# riscv-tests benchmarks on the 4-core SoC (make bench), RTL of the commit that added this file
+# (after FENCE.I / bug 16 and the ROB redirect register). rv32ima_zicsr, gcc 13.2.0 (Ubuntu 24.04) -O2.
+# <bench> <result> cycles=<whole run> region=<timed region> instret=<instructions in the region>
+#   branches/mispredicts: hart 0, whole run; busupgr/bustx: BusUpgr and all bus transactions of the four L1D
+dhrystone PASS cycles=402263 region=378009 instret=277029 branches=65816 mispredicts=1550 busupgr=0 bustx=579
+median PASS cycles=30781 region=11109 instret=4251 branches=3719 mispredicts=1263 busupgr=0 bustx=166
+multiply PASS cycles=55888 region=25357 instret=20897 branches=13721 mispredicts=1279 busupgr=0 bustx=60
+qsort PASS cycles=384652 region=236472 instret=123504 branches=68265 mispredicts=10682 busupgr=0 bustx=2660
+rsort PASS cycles=720398 region=328979 instret=171130 branches=21729 mispredicts=66 busupgr=0 bustx=29283
+towers PASS cycles=18253 region=6920 instret=3751 branches=771 mispredicts=159 busupgr=0 bustx=17
+vvadd PASS cycles=13851 region=3177 instret=2413 branches=1214 mispredicts=28 busupgr=0 bustx=182
+memcpy PASS cycles=300017 region=126648 instret=80021 branches=38179 mispredicts=28 busupgr=0 bustx=4021
+mt-vvadd PASS cycles=218177 region=89404 instret=- branches=31515 mispredicts=606 busupgr=634 bustx=9186
+mt-matmul PASS cycles=24870 region=14001 instret=- branches=1534 mispredicts=187 busupgr=2 bustx=550

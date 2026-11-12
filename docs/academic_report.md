@@ -1,5 +1,11 @@
 # Design and Implementation of a RISC-V Out-of-Order Processor with Planned Multi-Core Cache Coherence Support
 
+> **Note (2026-11-12).** This report describes the design as it was imported from the
+> original repository. Several of its statements do not match the current code (for example
+> "superscalar", the 16-entry BTB, the inclusive L2, the resource estimates and the clock
+> frequency). The current reference is [architecture.md](architecture.md); the differences
+> are listed as D1 to D18 in the design review linked from [plan/README.md](plan/README.md).
+
 ---
 
 ## Abstract
@@ -335,7 +341,7 @@ The core was tested with a sequence of 7 RV32I instructions:
 All 11 core modules compile cleanly under Icarus Verilog with zero errors and zero warnings:
 
 ```
-> iverilog -DSIM -I rtl/core -I rtl/cache tb/tb_ooo_core.v rtl/core/*.v
+> iverilog -DSIM -I rtl/core -I rtl/cache tb/tb_ooo_core.v rtl/core/*.v   (or simply: make sim-core)
 > (exit code 0, no output = clean compilation)
 ```
 
