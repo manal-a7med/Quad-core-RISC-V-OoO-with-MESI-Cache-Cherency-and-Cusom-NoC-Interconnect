@@ -75,7 +75,11 @@ module reorder_buffer (
     reg        rob_is_call     [0:`ROB_DEPTH-1];
     reg        rob_is_ret      [0:`ROB_DEPTH-1];
     reg        rob_mispredicted[0:`ROB_DEPTH-1];
-    reg [31:0] rob_branch_tgt  [0:`ROB_DEPTH-1];
+    // Redirect target: only the oldest mispredicted entry can ever redirect
+    // (everything younger is flushed with it), so one register is enough.
+    reg        mis_valid;
+    reg [3:0]  mis_idx;
+    reg [31:0] mis_tgt;
     reg        rob_exception   [0:`ROB_DEPTH-1];
     reg [31:0] rob_result      [0:`ROB_DEPTH-1];
 
@@ -96,6 +100,8 @@ module reorder_buffer (
     // Main Logic
     // ========================================================================
     integer k;
+    wire [3:0] complete_age = complete_idx - head;   // distance from the oldest entry
+    wire [3:0] mis_age      = mis_idx - head;
     wire do_alloc  = alloc_en && !rob_full;
     wire do_commit = !rob_empty && rob_valid[head] && rob_done[head];
 
@@ -108,6 +114,7 @@ module reorder_buffer (
             flush_out       <= 1'b0;
             trap_commit     <= 1'b0;
             flush_redirect_pc <= 32'd0;
+            mis_valid <= 1'b0;
             for (k = 0; k < `ROB_DEPTH; k = k + 1) begin
                 rob_valid[k]        <= 1'b0;
                 rob_done[k]         <= 1'b0;
@@ -122,6 +129,7 @@ module reorder_buffer (
             flush_out       <= 1'b0;
             trap_commit     <= 1'b0;
             flush_redirect_pc <= 32'd0;
+            mis_valid <= 1'b0;
             for (k = 0; k < `ROB_DEPTH; k = k + 1) begin
                 rob_valid[k]        <= 1'b0;
                 rob_done[k]         <= 1'b0;
@@ -162,7 +170,11 @@ module reorder_buffer (
                 rob_done[complete_idx]         <= 1'b1;
                 rob_result[complete_idx]       <= complete_result;
                 rob_mispredicted[complete_idx] <= complete_mispredicted;
-                rob_branch_tgt[complete_idx]   <= complete_branch_target;
+                if (complete_mispredicted && (!mis_valid || complete_age < mis_age)) begin
+                    mis_valid <= 1'b1;
+                    mis_idx   <= complete_idx;
+                    mis_tgt   <= complete_branch_target;
+                end
                 rob_exception[complete_idx]    <= complete_exception;
             end
 
@@ -172,7 +184,8 @@ module reorder_buffer (
             if (do_commit && (rob_is_branch[head] && rob_mispredicted[head])) begin
                 // Trigger pipeline flush
                 flush_out         <= 1'b1;
-                flush_redirect_pc <= rob_branch_tgt[head];
+                flush_redirect_pc <= mis_tgt;
+                mis_valid         <= 1'b0;
 
                 // Commit the branch/jump itself
                 commit_valid      <= 1'b1;
@@ -201,6 +214,7 @@ module reorder_buffer (
                 flush_out         <= 1'b1;
                 flush_redirect_pc <= trap_target;
                 trap_commit       <= 1'b1;
+                mis_valid         <= 1'b0;
                 for (k = 0; k < `ROB_DEPTH; k = k + 1) begin
                     rob_valid[k]        <= 1'b0;
                     rob_done[k]         <= 1'b0;
