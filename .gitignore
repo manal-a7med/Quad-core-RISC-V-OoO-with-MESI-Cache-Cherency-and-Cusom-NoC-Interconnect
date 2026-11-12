@@ -10,7 +10,7 @@ __pycache__/
 *.py[cod]
 *.class
 .venv/
-env/
+/env/
 
 # Editor / OS files
 .DS_Store
