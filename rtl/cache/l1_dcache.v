@@ -333,7 +333,7 @@ module l1_dcache (
                     // a BusUpgr
                     c_st_val = wr_eff ? M : S;
 `else
-                    c_st_val = wr_eff ? M : ((bus_shared === 1'b1) ? S : E);
+                    c_st_val = wr_eff ? M : (bus_shared ? S : E);
 `endif
                 end
             ST_UPGRADE:

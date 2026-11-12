@@ -1,12 +1,13 @@
 # Project plan and design review
 
-The working plan for carrying this design to FPGA and later ASIC lives in two
+The working plan for carrying this design to FPGA and later ASIC lives in three
 living documents (kept outside the repo so they can be commented on):
 
 | Document | What it covers |
 |---|---|
 | [Design review and FPGA readiness plan](https://claude.ai/artifact/7aUjMNPskuKsYJMgnQdEBK) | 18 RTL bugs, 11 FPGA blockers, 18 doc inconsistencies, repo hygiene, and the 8-phase roadmap |
 | [Verification and benchmarking strategy](https://claude.ai/artifact/D7Gc5MmsVvPDjYL7GPkim3) | Verification layers, per-block plan, coherence/memory-model checks, coverage and regression tiers, benchmark suite, baselines B0-B4 / N1-N2, measurement infrastructure |
+| [Project debrief](https://claude.ai/artifact/SsBZ9FbDEvC3xLPtwwLTE6) | Plain-language account of what was done in P0 to P4 and why, the bugs, the measurements, what a 2-wide core would take, and what remains |
 
 ## Roadmap (8 phases)
 
