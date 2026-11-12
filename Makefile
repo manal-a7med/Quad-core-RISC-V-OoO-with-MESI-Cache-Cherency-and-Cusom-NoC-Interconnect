@@ -9,7 +9,7 @@
 #   make ablation    The benchmarks on builds with one feature off (prediction, OoO issue, MESI E state)
 #   make coh-random  Constrained-random coherence test of the memory system (SEEDS, OPS)
 #   make coh-mutants Check that coh-random fails on six designs with injected coherence bugs
-#   make sw          Build the demo programs in sw/ (hello, parsum, atomics, prodcons, litmus, memstress)
+#   make sw          Build the demo programs in sw/ (hello, parsum, atomics, prodcons, litmus, memstress, selfmod)
 #   make soc-run PROG=hello   Run a demo program on the full SoC (UART printed)
 #   make fpga-sim PROG=hello  Board-level simulation of fpga_top (UART decoded from the pin)
 #   make fpga PROG=hello      Vivado bitstream for the Nexys A7-100T (CLKOUT_DIV=20: 50 MHz)
@@ -24,6 +24,8 @@
 #   make results     Regenerate docs/results/index.html (RISCV_TESTS=<checkout>)
 #   make animate     MESI terminal walkthrough + animated GIF
 #   make gui         Interactive MESI animation window
+#   make bench-check Compare build/bench/results.txt with the committed reference numbers
+#   make regress     Everything except the slow synthesis and benchmarks (RISCV_TESTS=<checkout>)
 #   make clean       Remove build outputs
 #
 # Tools come from PATH. On Windows override, e.g.
@@ -50,7 +52,7 @@ SOC_RTL   = $(CORE_RTL) $(CACHE_RTL) $(COH_RTL) $(MEM_RTL) $(IO_RTL) rtl/top/qua
 
 TESTS = mesi arbiter cache core dep corner quad
 
-.PHONY: all sim $(addprefix sim-,$(TESTS)) sim-repro isa synth soc-isa bench ablation coh-random coh-mutants sw soc-run fpga-sim fpga program lint lint-soc synth-soc synth-fpga results animate gui clean help
+.PHONY: all sim $(addprefix sim-,$(TESTS)) sim-repro isa synth soc-isa bench ablation coh-random coh-mutants bench-check regress sw soc-run fpga-sim fpga program lint lint-soc synth-soc synth-fpga results animate gui clean help
 
 all: sim
 
@@ -213,6 +215,27 @@ animate:
 	$(PYTHON) scripts/mesi_visualizer.py --verify-rtl --cli --gif $(GIF_OUT)
 gui:
 	$(PYTHON) scripts/mesi_visualizer.py --gui
+
+# Reference benchmark numbers (cycle counts match exactly with GCC 13.2.0)
+BENCH_REF ?= results/2026-11-12/bench.txt
+bench-check:
+	$(PYTHON) scripts/compare_bench.py $(BENCH_REF) $(OUT_DIR)/bench/results.txt
+
+# Full functional regression: every check that needs no Vivado and no
+# Verilator benchmark run. Stops at the first failure.
+REGRESS_PROGS = hello parsum atomics prodcons litmus memstress selfmod
+regress:
+	$(MAKE) sim
+	$(MAKE) sim-repro
+	$(MAKE) isa RISCV_TESTS=$(RISCV_TESTS)
+	$(MAKE) soc-isa
+	@for p in $(REGRESS_PROGS); do $(MAKE) soc-run PROG=$$p > $(OUT_DIR)/regress_$$p.log 2>&1 || { tail -20 $(OUT_DIR)/regress_$$p.log; exit 1; }; \
+	    echo "soc-run $$p: PASS"; done
+	@for p in $(REGRESS_PROGS); do $(MAKE) fpga-sim PROG=$$p > $(OUT_DIR)/regress_fpga_$$p.log 2>&1 || { tail -20 $(OUT_DIR)/regress_fpga_$$p.log; exit 1; }; \
+	    echo "fpga-sim $$p: PASS"; done
+	$(MAKE) coh-random
+	$(MAKE) coh-mutants
+	@echo "regress: all checks passed"
 
 clean:
 	rm -rf $(OUT_DIR) *.vcd *.vvp

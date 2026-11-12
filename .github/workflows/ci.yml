@@ -35,9 +35,11 @@ jobs:
         run: |
           make soc-run PROG=hello && make soc-run PROG=parsum
           make soc-run PROG=atomics && make soc-run PROG=prodcons && make soc-run PROG=litmus
-          make soc-run PROG=memstress
+          make soc-run PROG=memstress && make soc-run PROG=selfmod
       - name: Constrained-random coherence test (3 seeds)
         run: make coh-random
+      - name: Coherence test must catch six injected bugs
+        run: make coh-mutants
       - name: Board-level simulation of the FPGA top (UART decoded from the pin)
         run: make fpga-sim PROG=hello && make fpga-sim PROG=parsum
       - uses: actions/upload-artifact@v4
