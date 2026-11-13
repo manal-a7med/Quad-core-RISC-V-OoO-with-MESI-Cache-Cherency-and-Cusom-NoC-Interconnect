@@ -2,7 +2,7 @@
 # Mutation check of the random coherence test: each mutant is a copy of the
 # design with one deliberate coherence bug. The test must fail on every one.
 # Usage: scripts/coh_mutants.sh [ops per port, default 300]
-# NOC=1 [NOC_BANKS=4] in the environment: the NoC + directory build, with two
+# NOC=1 [NOC_BANKS=4] [NOC_FLIT=128] in the environment: the NoC + directory build, with two
 # more mutants in the directory home.
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 OPS=${1:-300}
@@ -15,9 +15,10 @@ OTHER="$ROOT/rtl/core/*.v $ROOT/rtl/cache/l1_icache.v $ROOT/rtl/coherence/bus_ar
 DEFS=""
 OUT=$ROOT/build/mutants
 if [ -n "$NOC" ]; then
-  B=${NOC_BANKS:-1}
+  B=${NOC_BANKS:-1}; T=noc$B; FD=""
+  [ -n "$NOC_FLIT" ] && { T=${T}_f$NOC_FLIT; FD="-DNOC_FLIT_W=$NOC_FLIT"; }
   OTHER="$OTHER $(ls "$ROOT"/rtl/noc/*.v | grep -v dir_home.v)"
-  DEFS="-DNOC -DNOC_BANKS=$B -I $ROOT/rtl/noc"; OUT=$ROOT/build/noc$B/mutants
+  DEFS="-DNOC -DNOC_BANKS=$B $FD -I $ROOT/rtl/noc"; OUT=$ROOT/build/$T/mutants
 fi
 rm -rf "$OUT"; mkdir -p "$OUT"
 

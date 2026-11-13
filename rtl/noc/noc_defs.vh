@@ -10,16 +10,23 @@
 //                       and a later probe to the same core arrive in order
 //                       (XY routing, FIFO buffers: point-to-point order)
 //
-// A link carries one 64-bit flit plus a tail bit per cycle (valid/ready).
-// A packet is a header flit, followed by four data flits (the 256-bit line,
-// low word first) when HDR_DATA is set.
+// A link carries one flit plus a tail bit per cycle (valid/ready).
+// A packet is a header flit, followed by the 256-bit line in DATA_FLITS
+// data flits (low part first) when HDR_DATA is set.
 // ============================================================================
 
 `ifndef NOC_DEFS_VH
 `define NOC_DEFS_VH
 
-`define FLIT_W        64
-`define LINK_W        65          // {tail, flit}
+// Flit width: 64 (default), 128 or 256 bits (+define+NOC_FLIT_W=..., make
+// NOC_FLIT=...). The header always uses the low 64 bits of its flit; a line
+// takes 256 / FLIT_W data flits.
+`ifndef NOC_FLIT_W
+`define NOC_FLIT_W    64
+`endif
+`define FLIT_W        `NOC_FLIT_W
+`define LINK_W        (`FLIT_W + 1)   // {tail, flit}
+`define DATA_FLITS    (256 / `FLIT_W)
 
 // Header flit fields
 `define HDR_TYPE      2:0         // message type (below)

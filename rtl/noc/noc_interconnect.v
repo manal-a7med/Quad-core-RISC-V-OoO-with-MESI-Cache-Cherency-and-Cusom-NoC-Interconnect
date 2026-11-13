@@ -153,7 +153,8 @@ module noc_interconnect #(
         end
     end
 
-    assign l2_req_valid = l2_busy ? h_l2_valid[l2_sel] : 1'b0;
+    // A free port passes the chosen request on in the same cycle
+    assign l2_req_valid = l2_busy ? h_l2_valid[l2_sel] : |h_l2_valid;
     assign l2_req_addr  = h_l2_addr[cur];
     assign l2_req_cmd   = h_l2_cmd[cur];
     assign l2_req_wdata = h_l2_wdata[cur];

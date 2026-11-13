@@ -10,6 +10,7 @@
 //   * nothing is lost or duplicated: every packet sent is received once
 //   * the network does not lock up (traffic drains after injection stops)
 // Plusargs: +seed=N +pkts=N (packets per source) +ready=P (eject ready %)
+// Flit width from +define+NOC_FLIT_W (64, 128 or 256).
 // ============================================================================
 
 `include "noc_defs.vh"
@@ -58,13 +59,14 @@ module tb_noc_mesh;
         end
     endfunction
 
-    function [63:0] word_of;
+    localparam FW = `FLIT_W;
+    function [FW-1:0] word_of;
         input [63:0] h;
         input integer w;
         reg [255:0] p;
         begin
             p = payload(h);
-            word_of = p[w*64 +: 64];
+            word_of = p[w*FW +: FW];
         end
     endfunction
 
@@ -105,7 +107,7 @@ module tb_noc_mesh;
             flits_rx = flits_rx + 1;
             if (pos[d] == 0) begin
                 cur_hdr[d] = f[63:0];
-                plen[d] = f[`HDR_DATA] ? 5 : 1;
+                plen[d] = f[`HDR_DATA] ? 1 + `DATA_FLITS : 1;
                 sx = f[`HDR_SRC];
                 if (f[`HDR_DST] != d) begin
                     $display("ERROR node %0d got a packet for node %0d", d, f[`HDR_DST]); errors = errors + 1;
@@ -115,7 +117,7 @@ module tb_noc_mesh;
                              d, f[63:48], sx, nexp[sx*4 + d]); errors = errors + 1;
                 end
                 nexp[sx*4 + d] = f[63:48] + 1;
-            end else if (f[63:0] != word_of(cur_hdr[d], pos[d] - 1)) begin
+            end else if (f[FW-1:0] != word_of(cur_hdr[d], pos[d] - 1)) begin
                 $display("ERROR node %0d: data flit %0d of packet %0d from %0d corrupted or interleaved",
                          d, pos[d], cur_hdr[d][63:48], cur_hdr[d][`HDR_SRC]); errors = errors + 1;
             end

@@ -93,8 +93,10 @@ module dir_home #(
     reg  [63:0]  tx_hdr;
     wire         tx_idle;
     reg  [255:0] line;                         // the line for the grant
+    reg  [2:0]   state;
+    wire [255:0] tx_data;
     noc_tx u_out_tx (
-        .clk(clk), .rst_n(rst_n), .send(tx_send), .hdr(tx_hdr), .data(line), .idle(tx_idle),
+        .clk(clk), .rst_n(rst_n), .send(tx_send), .hdr(tx_hdr), .data(tx_data), .idle(tx_idle),
         .flit(out_flit), .valid(out_valid), .ready(out_ready)
     );
 
@@ -156,7 +158,6 @@ module dir_home #(
     // ------------------------------------------------------------------
     localparam [2:0] H_INIT = 3'd0, H_IDLE = 3'd1, H_PROBE = 3'd2, H_COLLECT = 3'd3,
                      H_L2 = 3'd4, H_GRANT = 3'd5;
-    reg [2:0] state;
     reg [3:0] to_probe;                          // probes still to send
     reg [3:0] probed;                            // probes sent in this transaction
     reg [3:0] answered;                          // probe answers received
@@ -197,7 +198,12 @@ module dir_home #(
         end
     end
 
-    // Outgoing packets: probes in H_PROBE, the grant in H_GRANT
+    // Outgoing packets: probes in H_PROBE; the grant as soon as the L2
+    // answers (straight from its output), else in H_GRANT
+    wire grant_cyc = (state == H_GRANT) || (state == H_L2 && l2_resp_valid);
+    wire grant_now = grant_cyc && tx_idle;
+    assign tx_data = (state == H_L2) ? l2_resp_data : line;
+
     always @(*) begin
         tx_send = 1'b0;
         tx_hdr  = 64'd0;
@@ -207,7 +213,7 @@ module dir_home #(
             tx_hdr[`HDR_TYPE] = probe_msg;
             tx_hdr[`HDR_DST]  = next_probe;
             tx_hdr[`HDR_SRC]  = NODE;
-        end else if (state == H_GRANT) begin
+        end else if (grant_cyc) begin
             tx_send = tx_idle;
             tx_hdr[`HDR_TYPE]   = `MSG_GRANT;
             tx_hdr[`HDR_DST]    = r_core;
@@ -248,10 +254,10 @@ module dir_home #(
                 end
             end
         end
-        if (!(state == H_GRANT && tx_idle)) dt_we = 8'd0;
+        if (!grant_now) dt_we = 8'd0;
     end
 
-    always @(*) rq_pop = (state == H_GRANT) && tx_idle;
+    always @(*) rq_pop = grant_now;
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -290,7 +296,11 @@ module dir_home #(
                     answered <= 4'd0;
                     presp    <= 8'd0;
                     dirty    <= 1'b0;
-                    state    <= H_PROBE;
+                    // Nobody to probe: go straight to the L2 (or the grant)
+                    if (probe_set == 4'b0000)
+                        state <= (is_putm ? putm_ok : !is_upg) ? H_L2 : H_GRANT;
+                    else
+                        state <= H_PROBE;
                 end
 
                 H_PROBE: begin
@@ -303,7 +313,7 @@ module dir_home #(
 
                 H_L2: if (l2_resp_valid) begin
                     if (!is_putm) line <= l2_resp_data;
-                    state <= H_GRANT;
+                    state <= tx_idle ? H_IDLE : H_GRANT;     // grant sent now if the sender is free
                 end
 
                 H_GRANT: if (tx_idle) state <= H_IDLE;
@@ -319,7 +329,7 @@ module dir_home #(
             $display("%0t home%0d: req cmd=%0d core=%0d way=%0d if=%0d line=%h hold=%b owner=%b m=%b probe=%b",
                      $time, NODE, r_cmd, r_core, r_way, r_ifetch, {r_line,5'b0}, hold, owner, m, probe_set);
         if (rs_valid) $display("%0t home%0d: answer core=%0d resp=%0d data=%0d", $time, NODE, rs_hdr[`HDR_SRC], rs_hdr[`HDR_RESP], rs_hdr[`HDR_DATA]);
-        if (state == H_GRANT && tx_idle) $display("%0t home%0d: grant core=%0d shared=%0d upg=%0d getm=%0d dirty=%0d", $time, NODE, r_core, shared, is_upg, is_getm, dirty);
+        if (grant_now) $display("%0t home%0d: grant core=%0d shared=%0d upg=%0d getm=%0d dirty=%0d", $time, NODE, r_core, shared, is_upg, is_getm, dirty);
     end
 `endif
 `ifdef SIM

@@ -107,10 +107,19 @@ module tb_coh_random;
 
   // Bus and memory statistics
   integer n_rd, n_rdx, n_upgr, n_flush, n_hitm, n_l2wb, n_l2rd;
-  initial begin n_rd = 0; n_rdx = 0; n_upgr = 0; n_flush = 0; n_hitm = 0; n_l2wb = 0; n_l2rd = 0; end
+  integer n_lat, lat_sum;                  // L1 request latency: request raised -> acknowledge
+  integer lat_start [0:3];
+  initial begin n_rd = 0; n_rdx = 0; n_upgr = 0; n_flush = 0; n_hitm = 0; n_l2wb = 0; n_l2rd = 0;
+                n_lat = 0; lat_sum = 0; end
   genvar g;
   generate for (g = 0; g < 4; g = g + 1) begin : stat
+    reg busy_r;
+    initial busy_r = 1'b0;
     always @(posedge clk) if (rst_n) begin
+      if (dut.core_gen[g].u_l1d.bus_req && !busy_r) begin busy_r = 1'b1; lat_start[g] = $time; end
+      if (dut.core_gen[g].u_l1d.bus_ack) begin
+        busy_r = 1'b0; n_lat = n_lat + 1; lat_sum = lat_sum + ($time - lat_start[g]) / 10 + 1;
+      end
       if (dut.core_gen[g].u_l1d.bus_ack)
         case (dut.core_gen[g].u_l1d.bus_cmd)
           `BUS_READ:  n_rd    = n_rd + 1;
@@ -274,6 +283,8 @@ module tb_coh_random;
     wait (port_done == 4'h0);
     $display("coherence random test: seed %0d, %0d ops per port, %0d cycles", seed0, ops, cycles);
     $display("  checks %0d, amoadd %0d, SC ok %0d / failed %0d; SWMR checks %0d", checks, amo_done, sc_ok, sc_fail, swmr_checks);
+    $display("  L1 requests: %0d, average latency %0d.%0d cycles (request to acknowledge)",
+             n_lat, lat_sum / (n_lat ? n_lat : 1), (lat_sum * 10 / (n_lat ? n_lat : 1)) % 10);
     $display("  bus: BusRd %0d, BusRdX %0d, BusUpgr %0d, Flush %0d, HITM data %0d; L2->memory: writebacks %0d, reads %0d",
              n_rd, n_rdx, n_upgr, n_flush, n_hitm, n_l2wb, n_l2rd);
     if (errors == 0) $display("RESULT PASS cycles=%0d", cycles);

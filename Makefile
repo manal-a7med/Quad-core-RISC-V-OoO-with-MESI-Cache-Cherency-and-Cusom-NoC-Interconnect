@@ -6,6 +6,8 @@
 #   make isa         rv32ui, rv32um and rv32ua riscv-tests and system tests on one core (riscv-tests submodule)
 #   make soc-isa     the same programs on the full 4-core SoC with caches (after make isa)
 #   make bench       riscv-tests benchmarks on the 4-core SoC (Verilator; riscv-tests submodule)
+#   make compare-ic  The benchmarks on the bus and four NoC builds (P6 table)
+#   make traffic     Latency/throughput under synthetic load, bus vs NoC builds (P6)
 #   make ablation    The benchmarks on builds with one feature off (prediction, OoO issue, MESI E state)
 #   make coh-random  Constrained-random coherence test of the memory system (SEEDS, OPS)
 #   make coh-mutants Check that coh-random fails on six designs with injected coherence bugs
@@ -55,22 +57,24 @@ IO_RTL    = $(sort $(wildcard rtl/io/*.v))
 SOC_RTL   = $(CORE_RTL) $(CACHE_RTL) $(COH_RTL) $(MEM_RTL) $(IO_RTL) rtl/top/quad_core_top.v
 
 # NOC=1: build the SoC with the 2x2 mesh NoC + directory instead of the
-# snooping bus (rtl/noc/). NOC_BANKS=4 puts a directory home at every node.
-# Outputs go to build/noc<banks>/ so the two builds never mix.
+# snooping bus (rtl/noc/). NOC_BANKS=4 puts a directory home at every node;
+# NOC_FLIT=128 or 256 widens the links (default 64-bit flits).
+# Outputs go to build/noc<banks>[_f<flit>]/ so the builds never mix.
 NOC       ?=
 NOC_BANKS ?= 1
 ifneq ($(NOC),)
-NOC_DEFS   = -DNOC -DNOC_BANKS=$(NOC_BANKS)
+NOC_DEFS   = -DNOC -DNOC_BANKS=$(NOC_BANKS) $(if $(NOC_FLIT),-DNOC_FLIT_W=$(NOC_FLIT))
+NOC_TAG    = noc$(NOC_BANKS)$(if $(NOC_FLIT),_f$(NOC_FLIT))
 INC_FLAGS += $(NOC_DEFS) -I rtl/noc
 SOC_RTL   += $(sort $(wildcard rtl/noc/*.v))
-OUT_DIR    = build/noc$(NOC_BANKS)
-VL_CFG    ?= noc$(NOC_BANKS)
-export NOC NOC_BANKS
+OUT_DIR    = build/$(NOC_TAG)
+VL_CFG    ?= $(NOC_TAG)
+export NOC NOC_BANKS NOC_FLIT
 endif
 
 TESTS = mesi arbiter cache core dep corner quad noc
 
-.PHONY: all sim $(addprefix sim-,$(TESTS)) sim-repro isa synth soc-isa bench ablation coh-random coh-mutants bench-check regress sw soc-run fpga-sim fpga program lint lint-soc synth-soc synth-fpga results animate gui clean help
+.PHONY: traffic compare-ic all sim $(addprefix sim-,$(TESTS)) sim-repro isa synth soc-isa bench ablation coh-random coh-mutants bench-check regress sw soc-run fpga-sim fpga program lint lint-soc synth-soc synth-fpga results animate gui clean help
 
 all: sim
 
@@ -147,6 +151,17 @@ $(OUT_DIR)/vl_$(VL_CFG)/Vtb_soc: $(SOC_RTL) verif/soc/tb_soc.v | $(OUT_DIR)
 bench: $(OUT_DIR)/vl_$(VL_CFG)/Vtb_soc
 	$(check_rvt)
 	SIM=$(CURDIR)/$(OUT_DIR)/vl_$(VL_CFG)/Vtb_soc OUT=$(CURDIR)/$(OUT_DIR)/bench sh scripts/bench.sh $(RISCV_TESTS)
+
+# P6: the benchmarks on the bus and four NoC builds, one table
+# (build/compare_ic.txt; see scripts/compare_ic.sh)
+compare-ic:
+	$(check_rvt)
+	sh scripts/compare_ic.sh $(abspath $(RISCV_TESTS))
+
+# P6: latency and throughput under synthetic load, bus vs NoC builds
+# (build/traffic/traffic.txt; see verif/traffic/tb_traffic.v)
+traffic:
+	sh scripts/traffic_sweep.sh
 
 # The benchmarks on five builds: full, no branch prediction, in-order issue,
 # neither, and MSI instead of MESI (see scripts/ablation.sh)

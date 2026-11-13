@@ -16,6 +16,7 @@ module noc_rx (
     output reg  [255:0]       pkt_data,
     input  wire               pkt_pop
 );
+    localparam FW = `FLIT_W;
     reg [2:0] pos;
     assign ready = !pkt_valid;
 
@@ -26,7 +27,7 @@ module noc_rx (
             if (pkt_pop) pkt_valid <= 1'b0;
             if (valid && ready) begin
                 if (pos == 3'd0) pkt_hdr <= flit[63:0];
-                else             pkt_data[(pos - 3'd1)*64 +: 64] <= flit[63:0];
+                else             pkt_data[(pos - 3'd1)*FW +: FW] <= flit[FW-1:0];
                 if (flit[`LINK_W-1]) begin
                     pos       <= 3'd0;
                     pkt_valid <= 1'b1;
