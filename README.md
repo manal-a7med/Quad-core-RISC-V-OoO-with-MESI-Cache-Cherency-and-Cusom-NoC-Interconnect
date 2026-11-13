@@ -273,8 +273,9 @@ Each demo program has its expected output in `sw/<name>/expect.txt`, and
 The same system can be built with a 2x2 mesh network-on-chip and a directory
 in place of the snooping bus (see `docs/architecture.md`, section 4.2). Add
 `NOC=1` to any command above; `NOC_BANKS=4` gives every node its own
-directory home. Outputs go to `build/noc1/` (or `build/noc4/`), so the two
-builds never mix.
+directory home, and `NOC_FLIT=128` or `256` makes the network links wider
+(the default is 64 bits). Outputs go to `build/noc1/`, `build/noc4/`,
+`build/noc4_f256/` and so on, so the builds never mix.
 
 | Command | You should see |
 |---|---|
@@ -282,6 +283,20 @@ builds never mix.
 | `make coh-mutants NOC=1` | `mutants caught: 8 of 8` (the six above plus two directory bugs) |
 | `make soc-run NOC=1 PROG=litmus` | `litmus: no forbidden outcome` |
 | `make bench NOC=1` | benchmark cycle counts for the NoC build in `build/noc1/bench/results.txt` |
+| `make sim-noc` | `RESULT PASS` (the mesh alone under random traffic; also part of `make sim`) |
+
+### Bus vs NoC
+
+Both builds use the same cores, L1s, L2 and memory, so any difference in
+speed comes from the interconnect alone.
+
+| Command | What it gives |
+|---|---|
+| `make compare-ic` | the benchmarks on the bus and four NoC builds, side by side (`build/compare_ic.txt`) |
+| `make traffic` | latency and throughput under synthetic load: private lines, shared lines and one hot set (`build/traffic/traffic.txt`) |
+
+The latest numbers are in `results/2026-11-13/` (`interconnect.txt`,
+`traffic.txt`).
 
 ### Performance
 

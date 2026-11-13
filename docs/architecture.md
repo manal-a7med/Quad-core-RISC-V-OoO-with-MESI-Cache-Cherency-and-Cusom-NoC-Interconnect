@@ -169,8 +169,9 @@ cycle for cycle by this split.
   them.
 * **Routers** (`noc_router.v`): 3 ports (local, X neighbour, Y neighbour),
   XY routing, wormhole switching, a 2-flit buffer per input, round-robin
-  output allocation, valid/ready flow control. A flit is 64 bits; a packet
-  is a header flit plus four data flits when it carries a line.
+  output allocation, valid/ready flow control. A flit is 64 bits by default
+  (`NOC_FLIT=128` or `256` for wider links); a packet is a header flit plus,
+  when it carries a 32-byte line, 4, 2 or 1 data flits.
 * **Network interface** (`noc_ni.v`, one per core): turns an L1 request into
   a packet to the line's home, a grant into the L1 acknowledge, and a probe
   into a snoop of the L1 whose answer goes back to the home. After a grant
@@ -194,6 +195,11 @@ cycle for cycle by this split.
 With `NOC_BANKS=4` each node is home for a quarter of the lines (line
 address bits [6:5]); the four homes share the one L2 through a round-robin
 port arbiter in `noc_interconnect.v`.
+
+Two shortcuts keep the home quick: when no other cache holds the line it
+goes straight to the L2 (no probe round), and it sends the grant in the same
+cycle the L2 answers. A free L2 port passes a request on in the cycle it
+arrives.
 
 ## 5. Memory map
 
@@ -235,6 +241,24 @@ Simulated on the four-core SoC (`make bench`), riscv-tests benchmarks, GCC
 13.2 `-O2`. Dhrystone: 1.36 cycles per instruction, 0.75 DMIPS/MHz. The other
 single-hart benchmarks run at 1.2 to 2.6 cycles per instruction. Numbers and
 the per-feature ablation are in `results/`.
+
+**Bus vs NoC** (same cores, L1s, L2 and memory; `make compare-ic`,
+`make traffic`, numbers in `results/2026-11-13/`):
+
+* A single miss takes longer on the NoC: about 14 to 16 cycles at the CPU
+  port with no load, against 9 on the bus, because a request and its line
+  each cross the mesh as packets. Benchmarks that run on one hart and miss
+  a lot lose most (rsort runs at 0.71 to 0.83 of the bus speed, memcpy at
+  0.90 to 0.95); the others are within 6 %.
+* When the four cores miss on different lines at the same time, the NoC
+  carries more: the bus stops at about 170 accesses per 1000 cycles, the
+  NoC with a home per node and 256-bit links reaches about 260 (1.5x).
+* When cores share lines, the bus is faster: the home has to probe the
+  other cores and wait for their answers, a round trip across the mesh,
+  while the bus snoops everyone in one cycle. On one hot set the NoC gets
+  less than half the bus throughput.
+* Wider links (256-bit flits) and a home per node help most; with both,
+  mt-matmul runs 3 % faster than on the bus and mt-vvadd reaches 0.85.
 
 ## 8. Verification
 
