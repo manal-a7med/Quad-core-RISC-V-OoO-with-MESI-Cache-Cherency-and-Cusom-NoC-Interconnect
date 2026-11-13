@@ -196,6 +196,20 @@ With `NOC_BANKS=4` each node is home for a quarter of the lines (line
 address bits [6:5]); the four homes share the one L2 through a round-robin
 port arbiter in `noc_interconnect.v`.
 
+**Assertions.** In simulation (iverilog and Verilator) the NoC blocks check
+their own protocol and stop the run on a failure (`ERROR SVA ...`):
+
+| Where | Check |
+|---|---|
+| home | after every grant at most one cache owns the line, and an owner is the only holder (single writer) |
+| home | each probed core answers once, never a core that was not probed; a grant waits for every answer (no lost answers) |
+| home | a transaction ends within 5000 cycles |
+| network interface | a grant answers a request that was sent, for the same line; every request is granted within 20000 cycles |
+| router | the flits of a packet leave an output one after another, never mixed with another packet; a waiting flit is not dropped or changed; a packet leaves the mesh only at its destination |
+
+Both directory mutants of `make coh-mutants NOC=1` are now caught by the
+single-writer assertion, at the grant, before any cache misbehaves.
+
 Two shortcuts keep the home quick: when no other cache holds the line it
 goes straight to the L2 (no probe round), and it sends the grant in the same
 cycle the L2 answers. A free L2 port passes a request on in the cycle it

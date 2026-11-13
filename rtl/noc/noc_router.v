@@ -155,4 +155,49 @@ module noc_router #(
         end
     end
 
+`ifdef SIM
+    // ------------------------------------------------------------------
+    // Link assertions (simulation only; a failure stops the run)
+    // ------------------------------------------------------------------
+    reg  [2:0]         a_stall;                 // output was valid and not taken
+    reg  [`LINK_W-1:0] a_flit [0:2];
+    reg  [2:0]         a_body;                  // output is inside a packet
+    reg  [1:0]         a_src [0:2];             // input that sent the packet's last flit
+    integer a;
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            a_stall <= 3'b000; a_body <= 3'b000;
+        end else for (a = 0; a < 3; a = a + 1) begin
+            // wormhole: inside a packet, a flit offered and not taken stays,
+            // unchanged (a header may still lose the output to another input)
+            if (a_stall[a] && a_body[a])
+                assert (out_valid[a] && out_flit[a*`LINK_W +: `LINK_W] == a_flit[a])
+                else begin
+                    $display("ERROR SVA router %0d: output %0d dropped or changed a waiting flit of a packet (t=%0t)", NODE, a, $time);
+                    $fatal(1);
+                end
+            // a packet leaves on the local port only at its destination
+            if (a == 0 && out_valid[0] && out_ready[0] && !a_body[0])
+                assert (out_flit[`HDR_DST] == NODE)
+                else begin
+                    $display("ERROR SVA router %0d: packet for node %0d delivered here (t=%0t)",
+                             NODE, out_flit[`HDR_DST], $time);
+                    $fatal(1);
+                end
+            // wormhole: the flits of a packet follow each other on an output,
+            // no flit of another packet in between
+            if (a_body[a] && out_valid[a] && out_ready[a])
+                assert (sel[a] == a_src[a])
+                else begin
+                    $display("ERROR SVA router %0d: output %0d mixed flits of two packets (t=%0t)", NODE, a, $time);
+                    $fatal(1);
+                end
+            if (out_valid[a] && out_ready[a]) a_src[a] <= sel[a];
+            a_stall[a] <= out_valid[a] && !out_ready[a];
+            a_flit[a]  <= out_flit[a*`LINK_W +: `LINK_W];
+            if (out_valid[a] && out_ready[a]) a_body[a] <= !out_flit[a*`LINK_W + `LINK_W - 1];
+        end
+    end
+`endif
+
 endmodule

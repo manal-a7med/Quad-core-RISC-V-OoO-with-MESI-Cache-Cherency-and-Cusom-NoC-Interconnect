@@ -193,8 +193,35 @@ module noc_ni #(
     end
 
 `ifdef SIM
-    always @(posedge clk) if (rst_n && l1_ack && !sent)
-        $display("ERROR noc_ni %0d: grant without a request (t=%0t)", CORE, $time);
+    // ------------------------------------------------------------------
+    // Protocol assertions (simulation only; a failure stops the run)
+    // ------------------------------------------------------------------
+    integer wait_cyc;
+    initial wait_cyc = 0;
+    always @(posedge clk) if (rst_n) begin
+        // a grant answers a request that was sent
+        if (l1_ack)
+            assert (sent)
+            else begin
+                $display("ERROR SVA noc_ni %0d: grant without a request (t=%0t)", CORE, $time);
+                $fatal(1);
+            end
+        // a grant is for the line that was requested
+        if (l1_ack)
+            assert (op_hdr[`HDR_ADDR] == l1_addr[31:5])
+            else begin
+                $display("ERROR SVA noc_ni %0d: grant for line %h, requested %h (t=%0t)",
+                         CORE, {op_hdr[`HDR_ADDR], 5'b0}, {l1_addr[31:5], 5'b0}, $time);
+                $fatal(1);
+            end
+        // no lost grants: a request is granted within 20000 cycles
+        wait_cyc = sent ? wait_cyc + 1 : 0;
+        assert (wait_cyc < 20000)
+        else begin
+            $display("ERROR SVA noc_ni %0d: request for line %h not granted (t=%0t)", CORE, {l1_addr[31:5], 5'b0}, $time);
+            $fatal(1);
+        end
+    end
 `endif
 
 endmodule

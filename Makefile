@@ -141,7 +141,7 @@ soc-isa:
 
 # Verilator model of the SoC testbench: same cycle counts as iverilog, about
 # 40x faster. Used for the benchmarks.
-VL_FLAGS = --binary --timing -O3 -j 4 -Wno-fatal -Wno-lint -Wno-style -DSIM -Irtl/core -Irtl/cache -Iverif $(NOC_DEFS) -Irtl/noc
+VL_FLAGS = --binary --timing --assert -O3 -j 4 -Wno-fatal -Wno-lint -Wno-style -DSIM -Irtl/core -Irtl/cache -Iverif $(NOC_DEFS) -Irtl/noc
 VL_CFG  ?= soc
 VL_DEFS ?=
 $(OUT_DIR)/vl_$(VL_CFG)/Vtb_soc: $(SOC_RTL) verif/soc/tb_soc.v | $(OUT_DIR)

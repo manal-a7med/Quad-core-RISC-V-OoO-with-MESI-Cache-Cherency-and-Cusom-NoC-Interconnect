@@ -333,9 +333,62 @@ module dir_home #(
     end
 `endif
 `ifdef SIM
-    always @(posedge clk) if (rst_n && rs_valid && !probed[rs_hdr[`HDR_SRC]])
-        $display("ERROR dir_home %0d: probe answer from core %0d that was not probed (t=%0t)",
-                 NODE, rs_hdr[`HDR_SRC], $time);
+    // ------------------------------------------------------------------
+    // Protocol assertions (simulation only; a failure stops the run)
+    // ------------------------------------------------------------------
+    // Directory after this grant: the entries of the line, per core
+    reg [3:0] a_hold, a_em;
+    reg [22:0] a_new;
+    integer a;
+    always @(*) begin
+        a_hold = 4'd0; a_em = 4'd0;
+        for (a = 0; a < 8; a = a + 1) begin
+            a_new = dt_we[a] ? dt_wv[a] : de[a];
+            if (a_new[22:21] != D_I && a_new[20:0] == tag) begin
+                a_hold[a/2] = 1'b1;
+                if (a_new[22:21] == D_EM) a_em[a/2] = 1'b1;
+            end
+        end
+    end
+    function integer ones4(input [3:0] v); ones4 = v[0] + v[1] + v[2] + v[3]; endfunction
+
+    integer busy_cyc;
+    always @(posedge clk) if (rst_n) begin
+        // single writer: after a grant at most one cache owns the line (EM),
+        // and an owner is the only cache that holds it
+        if (grant_now)
+            assert (ones4(a_em) <= 1 && (a_em == 4'd0 || a_hold == a_em))
+            else begin
+                $display("ERROR SVA dir_home %0d: line %h has owners %b and holders %b after a grant (t=%0t)",
+                         NODE, {r_line, 5'b0}, a_em, a_hold, $time);
+                $fatal(1);
+            end
+        // no unexpected answers: each probed core answers once
+        if (rs_valid)
+            assert (probed[rs_hdr[`HDR_SRC]] && !answered[rs_hdr[`HDR_SRC]])
+            else begin
+                $display("ERROR SVA dir_home %0d: probe answer from core %0d that was not probed or already answered (t=%0t)",
+                         NODE, rs_hdr[`HDR_SRC], $time);
+                $fatal(1);
+            end
+        // no lost answers: a grant goes out only when every probe was answered
+        if (grant_now)
+            assert (answered == probed)
+            else begin
+                $display("ERROR SVA dir_home %0d: grant with probes %b but answers %b (t=%0t)",
+                         NODE, probed, answered, $time);
+                $fatal(1);
+            end
+        // progress: a transaction ends within 5000 cycles
+        busy_cyc = (state == H_IDLE || state == H_INIT) ? 0 : busy_cyc + 1;
+        assert (busy_cyc < 5000)
+        else begin
+            $display("ERROR SVA dir_home %0d: transaction on line %h stuck in state %0d (t=%0t)",
+                     NODE, {r_line, 5'b0}, state, $time);
+            $fatal(1);
+        end
+    end
+    initial busy_cyc = 0;
 `endif
 
 endmodule
