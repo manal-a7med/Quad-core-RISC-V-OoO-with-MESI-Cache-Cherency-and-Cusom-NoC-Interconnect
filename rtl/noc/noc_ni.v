@@ -62,7 +62,11 @@ module noc_ni #(
     // OUT network (eject)
     input  wire [`LINK_W-1:0] out_flit,
     input  wire               out_valid,
-    output wire               out_ready
+    output wire               out_ready,
+    // RSP network (eject): lines sent straight here by their owner
+    input  wire [`LINK_W-1:0] dat_flit,
+    input  wire               dat_valid,
+    output wire               dat_ready
 );
 
     function [1:0] home_of;
@@ -112,29 +116,61 @@ module noc_ni #(
         .pkt_valid(op_valid), .pkt_hdr(op_hdr), .pkt_data(op_data), .pkt_pop(op_pop)
     );
 
-    assign l1_rdata  = op_data;
-    assign l1_shared = op_hdr[`HDR_SHARED];
+    // Lines from their owner (forwarded requests)
+    wire         dv_valid;
+    wire [63:0]  dv_hdr;
+    wire [255:0] dv_data;
+    reg          dv_pop;
+    noc_rx u_dat_rx (
+        .clk(clk), .rst_n(rst_n),
+        .flit(dat_flit), .valid(dat_valid), .ready(dat_ready),
+        .pkt_valid(dv_valid), .pkt_hdr(dv_hdr), .pkt_data(dv_data), .pkt_pop(dv_pop)
+    );
+
+    // A grant marked HDR_FWD: the line comes separately, from the owner
+    // (dat_*) or from the home (MSG_DATA on OUT). Until it is here, probes
+    // for that line wait: they belong to later requests of other cores.
+    reg  wait_data, wd_shared;
+    wire is_data  = (op_hdr[`HDR_TYPE] == `MSG_DATA);
+    wire use_dv   = wait_data && dv_valid;          // the line came from the owner
+
+    assign l1_rdata  = use_dv ? dv_data : op_data;
+    assign l1_shared = wait_data ? wd_shared : op_hdr[`HDR_SHARED];
     assign pr_addr   = {op_hdr[`HDR_ADDR], 5'b0};
 
-    localparam P_IDLE = 2'd0, P_WAIT = 2'd1, P_SEND = 2'd2;
+    localparam P_IDLE = 2'd0, P_WAIT = 2'd1, P_DATA = 2'd3, P_SEND = 2'd2;
     reg  [1:0]  pstate;
     reg  [1:0]  presp;
     reg  [255:0] pdata;
     reg          pdirty;
+    reg          pfwd;                            // send the line to the requester first
     wire         rsp_idle;
     wire         is_grant = (op_hdr[`HDR_TYPE] == `MSG_GRANT);
 
+    // Probe answer to the home; for a forwarding probe, first the line to
+    // the requester (a GetS requester shares it with this core)
+    wire p_rd = (op_hdr[`HDR_TYPE] == `MSG_PROBE_RD);
     reg [63:0] rsp_hdr;
     always @(*) begin
         rsp_hdr              = 64'd0;
-        rsp_hdr[`HDR_TYPE]   = `MSG_PRESP;
-        rsp_hdr[`HDR_DST]    = home_of(pr_addr);
         rsp_hdr[`HDR_SRC]    = CORE;
-        rsp_hdr[`HDR_DATA]   = pdirty;
         rsp_hdr[`HDR_ADDR]   = op_hdr[`HDR_ADDR];
-        rsp_hdr[`HDR_RESP]   = presp;
+        if (pstate == P_DATA) begin
+            rsp_hdr[`HDR_TYPE]   = `MSG_DATA;
+            rsp_hdr[`HDR_DST]    = op_hdr[`HDR_CORE];
+            rsp_hdr[`HDR_CORE]   = op_hdr[`HDR_CORE];
+            rsp_hdr[`HDR_DATA]   = 1'b1;
+            rsp_hdr[`HDR_SHARED] = p_rd;
+        end else begin
+            rsp_hdr[`HDR_TYPE]   = `MSG_PRESP;
+            rsp_hdr[`HDR_DST]    = home_of(pr_addr);
+            // a forwarded GetM needs no data at the home (the requester has it)
+            rsp_hdr[`HDR_DATA]   = pdirty && !(pfwd && !p_rd);
+            rsp_hdr[`HDR_RESP]   = presp;
+            rsp_hdr[`HDR_SENT]   = pfwd;
+        end
     end
-    wire rsp_send = (pstate == P_SEND) && rsp_idle;
+    wire rsp_send = (pstate == P_SEND || pstate == P_DATA) && rsp_idle;
 
     noc_tx u_rsp_tx (
         .clk(clk), .rst_n(rst_n),
@@ -142,22 +178,36 @@ module noc_ni #(
         .flit(rsp_flit), .valid(rsp_valid), .ready(rsp_ready)
     );
 
+    wire defer = wait_data && (op_hdr[`HDR_ADDR] == l1_addr[31:5]);   // probe for the line on its way here
+
     always @(*) begin
         l1_ack   = 1'b0;
         pr_valid = 1'b0;
         op_pop   = 1'b0;
+        dv_pop   = 1'b0;
         case (op_hdr[`HDR_TYPE])
             `MSG_PROBE_RD:  pr_cmd = `BUS_READ;
             `MSG_PROBE_RDX: pr_cmd = `BUS_READX;
             default:        pr_cmd = `BUS_UPGR;
         endcase
+        if (use_dv) begin                                  // line from the owner
+            l1_ack = 1'b1;
+            dv_pop = 1'b1;
+        end
         if (op_valid) begin
             if (is_grant) begin
-                l1_ack = 1'b1;
-                op_pop = 1'b1;
+                if (!use_dv) begin
+                    l1_ack = !op_hdr[`HDR_FWD];                // else wait for the line
+                    op_pop = 1'b1;
+                end
+            end else if (is_data) begin                        // line from the home
+                if (!use_dv) begin
+                    l1_ack = 1'b1;
+                    op_pop = 1'b1;
+                end
             end else begin
-                pr_valid = (pstate == P_IDLE) && (hold == 2'd0);
-                op_pop   = rsp_send;
+                pr_valid = (pstate == P_IDLE) && (hold == 2'd0) && !defer && !use_dv;
+                op_pop   = rsp_send && (pstate == P_SEND);
             end
         end
     end
@@ -171,7 +221,15 @@ module noc_ni #(
             presp  <= `SNOOP_NONE;
             pdata  <= 256'd0;
             pdirty <= 1'b0;
+            pfwd   <= 1'b0;
+            wait_data <= 1'b0;
+            wd_shared <= 1'b0;
         end else begin
+            if (op_valid && is_grant && op_hdr[`HDR_FWD] && !use_dv) begin
+                wait_data <= 1'b1;
+                wd_shared <= op_hdr[`HDR_SHARED];
+            end
+            if (l1_ack) wait_data <= 1'b0;
             ack_d <= l1_ack;
             if (l1_ack)            hold <= 2'd3;
             else if (hold != 2'd0) hold <= hold - 2'd1;
@@ -179,13 +237,17 @@ module noc_ni #(
             if (l1_ack)   sent <= 1'b0;
 
             case (pstate)
-                P_IDLE: if (op_valid && !is_grant && hold == 2'd0) pstate <= P_WAIT;
+                P_IDLE: if (pr_valid) pstate <= P_WAIT;
                 P_WAIT: begin                       // the L1 answers this cycle
                     presp  <= pr_resp;
                     pdata  <= pr_data;
                     pdirty <= (pr_resp == `SNOOP_HITM) && pr_dvalid;
-                    pstate <= P_SEND;
+                    // forwarding probe and the line is here: send it to the requester
+                    pfwd   <= op_hdr[`HDR_FWD] && (pr_resp == `SNOOP_HIT || pr_resp == `SNOOP_HITM);
+                    pstate <= (op_hdr[`HDR_FWD] && (pr_resp == `SNOOP_HIT || pr_resp == `SNOOP_HITM))
+                              ? P_DATA : P_SEND;
                 end
+                P_DATA: if (rsp_idle) pstate <= P_SEND;
                 P_SEND: if (rsp_idle) pstate <= P_IDLE;
                 default: pstate <= P_IDLE;
             endcase
@@ -206,9 +268,9 @@ module noc_ni #(
                 $display("ERROR SVA noc_ni %0d: grant without a request (t=%0t)", CORE, $time);
                 $fatal(1);
             end
-        // a grant is for the line that was requested
+        // a grant (or the line after it) is for the line that was requested
         if (l1_ack)
-            assert (op_hdr[`HDR_ADDR] == l1_addr[31:5])
+            assert ((use_dv ? dv_hdr[`HDR_ADDR] : op_hdr[`HDR_ADDR]) == l1_addr[31:5])
             else begin
                 $display("ERROR SVA noc_ni %0d: grant for line %h, requested %h (t=%0t)",
                          CORE, {op_hdr[`HDR_ADDR], 5'b0}, {l1_addr[31:5], 5'b0}, $time);

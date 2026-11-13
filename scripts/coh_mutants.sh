@@ -23,7 +23,7 @@ fi
 rm -rf "$OUT"; mkdir -p "$OUT"
 
 caught=0; total=0
-# mutant <name> <file: l1|l2|dh> <sed expression> <description>
+# mutant <name> <file: l1|l2|dh> <sed expression> <description> [ops per port]
 mutant() {
   total=$((total + 1))
   cp "$L1" "$OUT/l1.v"; cp "$L2" "$OUT/l2.v"; cp "$DH" "$OUT/dh.v"
@@ -35,7 +35,7 @@ mutant() {
   HOME_SRC=""; [ -n "$NOC" ] && HOME_SRC="$OUT/dh.v"
   iverilog -g2012 -DSIM -DNO_UART_ECHO $DEFS -I "$ROOT/rtl/core" -I "$ROOT/rtl/cache" -I "$ROOT/verif" \
     -o "$OUT/$1.vvp" $OTHER "$OUT/l1.v" "$OUT/l2.v" $HOME_SRC "$ROOT/verif/coherence/tb_coh_random.v" 2> /dev/null
-  vvp -n "$OUT/$1.vvp" +ops="$OPS" > "$OUT/$1.log" 2>&1
+  vvp -n "$OUT/$1.vvp" +ops="${5:-$OPS}" > "$OUT/$1.log" 2>&1
   first=$(grep -m1 '^ERROR' "$OUT/$1.log" | cut -c1-110)
   if grep -q 'RESULT PASS' "$OUT/$1.log"; then
     echo "mutant $1: MISSED | $4"
@@ -58,10 +58,12 @@ mutant resv_survives l1 's/resv_valid <= 1.b0;                         \/\/ line
   "the LR reservation survives a snoop invalidation"
 
 if [ -n "$NOC" ]; then
-mutant dir_getm_keeps_sharers dh 's/(is_getm || is_upg) ? others : 4.b0000;/(is_getm || is_upg) ? (others \& owner) : 4'"'"'b0000;/' \
+mutant dir_getm_keeps_sharers dh 's/(s_getm || s_upg) ? s_oth : 4.b0000;/(s_getm || s_upg) ? (s_oth \& s_owner) : 4'"'"'b0000;/' \
   "directory: a GetM / Upgrade probes only the owner, other sharers keep stale copies"
-mutant dir_e_with_sharers dh 's/wire shared = |kept || |(others \& ~probed);/wire shared = |kept;/' \
+mutant dir_e_with_sharers dh 's/wire g_shared = e_fwd\[tx_k\] || |g_kept || |(g_hold \& ~g_self \& ~g_probed);/wire g_shared = e_fwd[tx_k] || |g_kept;/' \
   "directory: a GetS is granted E although other caches still share the line"
+mutant dir_no_victim dh 's/if (vic_new \&\& vi == g_core) vic_nx\[vi\] = vic_put ? D_EM : db\[g_ent\]\[22:21\];/;/' \
+  "directory: a line replaced by a fill is forgotten before the fill arrives" 2000
 fi
 
 echo "mutants caught: $caught of $total"

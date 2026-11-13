@@ -5,7 +5,8 @@
 // can never be stuck behind a message of another (no protocol deadlock):
 //
 //   REQ  core -> home   GetS / GetM / Upgrade / PutM requests
-//   RSP  core -> home   probe responses (with the line if it was dirty)
+//   RSP  core -> home   probe responses (with the line if it was dirty);
+//        core -> core   the line, sent by its owner straight to the requester
 //   OUT  home -> core   probes and grants. One network for both, so a grant
 //                       and a later probe to the same core arrive in order
 //                       (XY routing, FIFO buffers: point-to-point order)
@@ -38,7 +39,10 @@
 `define HDR_IFETCH    10          // request is an I-cache line fetch
 `define HDR_ADDR      37:11       // line address [31:5]
 `define HDR_RESP      39:38       // probe response (`SNOOP_*)
-`define HDR_CORE      41:40       // grant: the core it is for (= destination)
+`define HDR_CORE      41:40       // grant: the core it is for; forwarding probe: the requester
+`define HDR_FWD       42          // probe: send the line straight to core HDR_CORE;
+                                  // grant: the line follows in a MSG_DATA packet
+`define HDR_SENT      43          // probe response: the line was sent to the requester
 
 // Message types. REQ uses the bus command codes (`BUS_READ etc. in
 // mesi_defines.vh) so the two builds speak the same language.
@@ -47,5 +51,7 @@
 `define MSG_PROBE_RDX 3'd2        // OUT: probe, same as a BusRdX snoop
 `define MSG_PROBE_INV 3'd5        // OUT: probe, invalidate (BusUpgr snoop)
 `define MSG_PRESP     3'd6        // RSP: probe response
+`define MSG_DATA      3'd3        // RSP (from the owner) or OUT (from the home): the line
+                                  // for a grant marked HDR_FWD
 
 `endif

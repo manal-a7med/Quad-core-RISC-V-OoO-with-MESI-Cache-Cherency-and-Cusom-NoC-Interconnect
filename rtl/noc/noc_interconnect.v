@@ -10,8 +10,10 @@
 //   NBANKS = 4: a home at every node for a quarter of the lines; the four
 //               homes share the one L2 through a round-robin port arbiter
 //
-// Three meshes: REQ (core -> home), RSP (probe answers, core -> home) and
-// OUT (probes and grants, home -> core).
+// Three meshes: REQ (core -> home), RSP (probe answers, core -> home, and
+// lines sent by their owner straight to a requester, core -> core) and
+// OUT (probes, grants and lines, home -> core). At each node the RSP eject
+// port is split by message type: MSG_DATA to the core, the rest to the home.
 // ============================================================================
 
 `include "mesi_defines.vh"
@@ -74,7 +76,27 @@ module noc_interconnect #(
     wire [255:0] h_l2_wdata [0:3];
     wire [3:0]   h_l2_resp;
 
+    // RSP eject split per node: a packet goes whole to the core (MSG_DATA)
+    // or to the home. Both always take their packets, so neither can block
+    // the other for long.
+    wire [3:0] dat_v, dat_r, hrsp_v, hrsp_r;
+    reg  [3:0] sp_mid, sp_core;                  // inside a packet, and where it goes
+    wire [3:0] sp_to_core;
     genvar n;
+    generate for (n = 0; n < 4; n = n + 1) begin : split
+        assign sp_to_core[n] = sp_mid[n] ? sp_core[n] : (rsp_ej[n*LW +: 3] == `MSG_DATA);
+        assign dat_v[n]      = rsp_ej_v[n] &&  sp_to_core[n];
+        assign hrsp_v[n]     = rsp_ej_v[n] && !sp_to_core[n];
+        assign rsp_ej_r[n]   = sp_to_core[n] ? dat_r[n] : hrsp_r[n];
+        always @(posedge clk or negedge rst_n)
+            if (!rst_n) begin
+                sp_mid[n] <= 1'b0; sp_core[n] <= 1'b0;
+            end else if (rsp_ej_v[n] && rsp_ej_r[n]) begin
+                sp_mid[n]  <= !rsp_ej[n*LW + LW - 1];
+                sp_core[n] <= sp_to_core[n];
+            end
+    end endgenerate
+
     generate for (n = 0; n < 4; n = n + 1) begin : tile
         noc_ni #(.CORE(n), .NBANKS(NBANKS), .HOME0(2'd0)) u_ni (
             .clk      (clk),
@@ -97,7 +119,8 @@ module noc_interconnect #(
             .pr_dvalid(pr_dvalid[n]),
             .req_flit (req_inj[n*LW +: LW]), .req_valid(req_inj_v[n]), .req_ready(req_inj_r[n]),
             .rsp_flit (rsp_inj[n*LW +: LW]), .rsp_valid(rsp_inj_v[n]), .rsp_ready(rsp_inj_r[n]),
-            .out_flit (out_ej[n*LW +: LW]),  .out_valid(out_ej_v[n]),  .out_ready(out_ej_r[n])
+            .out_flit (out_ej[n*LW +: LW]),  .out_valid(out_ej_v[n]),  .out_ready(out_ej_r[n]),
+            .dat_flit (rsp_ej[n*LW +: LW]),  .dat_valid(dat_v[n]),      .dat_ready(dat_r[n])
         );
 
         if (NBANKS == 4 || n == 0) begin : home
@@ -105,7 +128,7 @@ module noc_interconnect #(
                 .clk          (clk),
                 .rst_n        (rst_n),
                 .req_flit     (req_ej[n*LW +: LW]), .req_valid(req_ej_v[n]), .req_ready(req_ej_r[n]),
-                .rsp_flit     (rsp_ej[n*LW +: LW]), .rsp_valid(rsp_ej_v[n]), .rsp_ready(rsp_ej_r[n]),
+                .rsp_flit     (rsp_ej[n*LW +: LW]), .rsp_valid(hrsp_v[n]), .rsp_ready(hrsp_r[n]),
                 .out_flit     (out_inj[n*LW +: LW]), .out_valid(out_inj_v[n]), .out_ready(out_inj_r[n]),
                 .l2_req_valid (h_l2_valid[n]),
                 .l2_req_addr  (h_l2_addr[n]),
@@ -116,7 +139,7 @@ module noc_interconnect #(
             );
         end else begin : nohome
             assign req_ej_r[n] = 1'b1;
-            assign rsp_ej_r[n] = 1'b1;
+            assign hrsp_r[n] = 1'b1;
             assign out_inj[n*LW +: LW] = {LW{1'b0}};
             assign out_inj_v[n] = 1'b0;
             assign h_l2_valid[n] = 1'b0;

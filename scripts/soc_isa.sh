@@ -15,6 +15,7 @@ if [ -n "$NOC" ]; then
 fi
 mkdir -p "$OUT"
 iverilog -g2012 -DSIM $DEFS -I "$ROOT/rtl/core" -I "$ROOT/rtl/cache" -I "$ROOT/verif" -o "$OUT/soc.vvp" $SRC "$ROOT/verif/soc/tb_soc.v" || exit 1
+ls "$ROOT"/build/isa/*.hex > /dev/null 2>&1 || { echo "soc_isa: no ISA tests in build/isa, run make isa first"; exit 1; }
 pass=0; fail=0; : > "$OUT/summary.txt"
 for h in "$ROOT"/build/isa/*.hex; do
   t=$(basename "$h" .hex)

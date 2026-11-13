@@ -164,9 +164,11 @@ cycle for cycle by this split.
 * **Networks.** Three separate 2x2 meshes, one per message class, so a
   message can never wait behind one of another class (no protocol
   deadlock): REQ (core to home: GetS, GetM, Upgrade, PutM), RSP (core to
-  home: probe answers) and OUT (home to core: probes and grants). Grants and
-  probes share OUT so that they reach a core in the order the home sent
-  them.
+  home: probe answers; core to core: a line sent by its owner straight to
+  the requester) and OUT (home to core: probes, grants and lines). Grants
+  and probes share OUT so that they reach a core in the order the home sent
+  them. At each node the RSP exit is split: lines go to the core, answers
+  to the home.
 * **Routers** (`noc_router.v`): 3 ports (local, X neighbour, Y neighbour),
   XY routing, wormhole switching, a 2-flit buffer per input, round-robin
   output allocation, valid/ready flow control. A flit is 64 bits by default
@@ -174,23 +176,45 @@ cycle for cycle by this split.
   when it carries a 32-byte line, 4, 2 or 1 data flits.
 * **Network interface** (`noc_ni.v`, one per core): turns an L1 request into
   a packet to the line's home, a grant into the L1 acknowledge, and a probe
-  into a snoop of the L1 whose answer goes back to the home. After a grant
-  it holds any probe back for three cycles so the L1 can finish the access
-  it fetched the line for (without this, two cores storing to one line take
-  it from each other forever).
+  into a snoop of the L1 whose answer goes back to the home. A forwarding
+  probe also makes it send the line to the requester. A grant that says
+  "the line follows" makes it wait for that line; probes for the same line
+  wait too, because they belong to later requests. After a grant it holds
+  any probe back for three cycles so the L1 can finish the access it
+  fetched the line for (without this, two cores storing to one line take it
+  from each other forever).
 * **Directory home** (`dir_home.v`): keeps a copy of every L1D tag with a
   state (I, S, or EM = only copy, clean or dirty), 4 cores x 128 entries.
   A request carries the L1 way it fills, so the copy stays exact and no
   inclusive L2 is needed (an inclusive 16 KB L2 would have to hold all
-  16 KB of the four L1Ds). The home serves one request at a time:
+  16 KB of the four L1Ds).
+
+**Several lines at once.** A core has at most one request outstanding, so
+the home has one request slot and one transaction engine per core. Engines
+on different lines run at the same time; a request for a line another engine
+is working on waits for it, so each line still sees its requests one at a
+time. The engines share the directory, the OUT sender and the L2 port, each
+given round-robin. The directory is looked up when an engine starts (whom to
+probe) and again when it grants (what to write), so a grant of another line
+in the same set in between is seen.
 
 | Request | Probes sent to | Data from | Grant |
 |---|---|---|---|
-| GetS (BusRd) | the owner (EM), if any | dirty probe answer (also written to L2), else L2 | S if another copy stays, else E |
-| GetS from the I-cache | the owner, including the requester's own L1D | as above | the line |
-| GetM (BusRdX) | every other holder | dirty probe answer, else L2 | M |
+| GetS (BusRd), another cache owns it | the owner, naming the requester | the owner, straight to the requester (the home writes a dirty line to L2 too); L2 if the owner had no copy | S, sent with the probe |
+| GetS, no owner | none | L2 | S if another copy stays, else E |
+| GetS from the I-cache | the owner, including the requester's own L1D | the owner's answer, else L2 | the line |
+| GetM (BusRdX) | the owner (forwarding, as for GetS), or every sharer | the owner, or L2 (read while the sharers are invalidated) | M |
 | Upgrade (BusUpgr) | every other holder (invalidate) | none | ack; if the requester lost the line meanwhile it is served as GetM |
-| PutM (BusFlush) | none | written to L2 if the sender still owns the line | ack |
+| PutM (BusFlush) | none | written to L2 after the ack, if the sender still owns the line | ack |
+
+**Victims.** A fill overwrites the directory entry of the line the core had
+in that place, but the core keeps that line until the fill arrives. The home
+therefore keeps the old entry as the core's "victim" until the core's next
+request reaches it (sent only after the fill): until then it counts as a
+copy and probes for it go to that core. A line written back with PutM is
+kept the same way, because the L1 drops it only at its next fill. Without this, another core could be
+given E or M while the old copy still sat in the first core's cache (found
+by the random test, now a mutant).
 
 With `NOC_BANKS=4` each node is home for a quarter of the lines (line
 address bits [6:5]); the four homes share the one L2 through a round-robin
@@ -202,18 +226,14 @@ their own protocol and stop the run on a failure (`ERROR SVA ...`):
 | Where | Check |
 |---|---|
 | home | after every grant at most one cache owns the line, and an owner is the only holder (single writer) |
-| home | each probed core answers once, never a core that was not probed; a grant waits for every answer (no lost answers) |
+| home | no two engines on the same line; one request per core at a time |
+| home | probe answers come only from probed cores, to the engine on that line; a grant waits for every answer, except a forwarded one, whose transaction ends only then (no lost answers) |
 | home | a transaction ends within 5000 cycles |
-| network interface | a grant answers a request that was sent, for the same line; every request is granted within 20000 cycles |
+| network interface | a grant (or the line after it) answers a request that was sent, for the same line; every request is granted within 20000 cycles |
 | router | the flits of a packet leave an output one after another, never mixed with another packet; a waiting flit is not dropped or changed; a packet leaves the mesh only at its destination |
 
-Both directory mutants of `make coh-mutants NOC=1` are now caught by the
-single-writer assertion, at the grant, before any cache misbehaves.
-
-Two shortcuts keep the home quick: when no other cache holds the line it
-goes straight to the L2 (no probe round), and it sends the grant in the same
-cycle the L2 answers. A free L2 port passes a request on in the cycle it
-arrives.
+The directory mutants of `make coh-mutants NOC=1` are caught by the
+single-writer assertion at the grant, before any cache misbehaves.
 
 ## 5. Memory map
 
