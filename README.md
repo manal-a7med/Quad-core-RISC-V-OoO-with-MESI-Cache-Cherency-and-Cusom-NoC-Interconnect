@@ -127,7 +127,7 @@ and Python 3. These are the versions Ubuntu 24.04 installs.
 | `make`, `git`, `python3` | everything |
 | Icarus Verilog (`iverilog`) | all simulations |
 | RISC-V GCC (`riscv64-unknown-elf-gcc`) | ISA tests, C programs, benchmarks |
-| riscv-tests (a source checkout; nothing to build) | ISA tests and benchmarks |
+| riscv-tests (included as a git submodule; nothing to install) | ISA tests and benchmarks |
 | Verilator 5.x | `make bench`, `make ablation`, `make lint` |
 | Yosys | `make synth`, `make synth-fpga` |
 | Vivado (optional) | bitstream for the board |
@@ -139,15 +139,22 @@ and Python 3. These are the versions Ubuntu 24.04 installs.
 sudo apt-get update
 sudo apt-get install -y git make python3 iverilog verilator yosys gcc-riscv64-unknown-elf
 
-git clone https://github.com/manal-a7med/Quad-core-RISC-V-OoO-with-MESI-Cache-Cherency-and-Cusom-NoC-Interconnect.git
-git clone --depth 1 https://github.com/riscv-software-src/riscv-tests.git
+git clone --recurse-submodules https://github.com/manal-a7med/Quad-core-RISC-V-OoO-with-MESI-Cache-Cherency-and-Cusom-NoC-Interconnect.git
 cd Quad-core-RISC-V-OoO-with-MESI-Cache-Cherency-and-Cusom-NoC-Interconnect
 ```
 
-The riscv-tests checkout sits next to this repository, which is where the
-Makefile looks by default (`../riscv-tests`). If you put it somewhere else, add
-`RISCV_TESTS=/path/to/riscv-tests` to the `make isa`, `make bench`,
-`make regress` and `make results` commands.
+`--recurse-submodules` also downloads
+[riscv-tests](https://github.com/riscv-software-src/riscv-tests) into
+`third_party/riscv-tests`, pinned to the exact commit the published results
+were made with, so your ISA test and benchmark numbers match ours. If you
+already cloned without it, run this once inside the repository:
+
+```
+git submodule update --init --recursive
+```
+
+To use a different riscv-tests checkout, add `RISCV_TESTS=/path/to/riscv-tests`
+to the `make isa`, `make bench`, `make regress` and `make results` commands.
 
 Other distributions: install the same tools with your package manager.
 Ubuntu 22.04 ships Verilator 4, which is too old for `make bench`; everything
@@ -173,8 +180,7 @@ Windows. Vivado stays a normal Windows program.
    sudo apt-get install -y git make python3 iverilog verilator yosys gcc-riscv64-unknown-elf
    git config --global core.autocrlf false
    mkdir -p /mnt/c/work && cd /mnt/c/work
-   git clone https://github.com/manal-a7med/Quad-core-RISC-V-OoO-with-MESI-Cache-Cherency-and-Cusom-NoC-Interconnect.git
-   git clone --depth 1 https://github.com/riscv-software-src/riscv-tests.git
+   git clone --recurse-submodules https://github.com/manal-a7med/Quad-core-RISC-V-OoO-with-MESI-Cache-Cherency-and-Cusom-NoC-Interconnect.git
    cd Quad-core-RISC-V-OoO-with-MESI-Cache-Cherency-and-Cusom-NoC-Interconnect
    ```
    The same folder is `C:\work\Quad-core-RISC-V-...` in Windows Explorer.
@@ -348,13 +354,13 @@ checked against it.
 
 | Symptom | Cause and fix |
 |---|---|
-| `riscv_test.h: No such file or directory` | Your copy is older than commit d23abfc, which first committed `verif/riscv-tests/env/`. Update the repository |
-| Every ISA test says `RESULT TIMEOUT` | Your copy is older than commit 2c6cd88 and sits in a folder with a long path (as on GitHub Actions), so the test file name was cut off. Update the repository |
-| `make isa` cannot find the tests | riscv-tests is not at `../riscv-tests`; pass `RISCV_TESTS=/path/to/riscv-tests` |
+| `riscv_test.h: No such file or directory` | Your copy is older than commit 20582bd, which first committed `verif/riscv-tests/env/`. Update the repository |
+| Every ISA test says `RESULT TIMEOUT` | Your copy is older than commit 0f6c40e and sits in a folder with a long path (as on GitHub Actions), so the test file name was cut off. Update the repository |
+| `riscv-tests not found at third_party/riscv-tests` | The repository was cloned without `--recurse-submodules`. Run `git submodule update --init --recursive` |
 | `/bin/sh^M: bad interpreter` or `$'\r': command not found` | Windows line endings. Run `git config --global core.autocrlf false`, delete the clone and clone again |
 | `make bench` fails while building the model | Verilator is older than 5.0. Use Ubuntu 24.04 or install Verilator 5 |
 | `riscv64-unknown-elf-gcc: not found` | Install `gcc-riscv64-unknown-elf` |
-| A CI job is red on GitHub | Open the job, then the failed step. "Install tools" or "Fetch riscv-tests" failures are usually network problems; use "Re-run failed jobs". For anything else, run the same `make` command locally |
+| A CI job is red on GitHub | Open the job, then the failed step. "Install tools" or checkout (submodule) failures are usually network problems; use "Re-run failed jobs". For anything else, run the same `make` command locally |
 
 ## Documentation and history
 

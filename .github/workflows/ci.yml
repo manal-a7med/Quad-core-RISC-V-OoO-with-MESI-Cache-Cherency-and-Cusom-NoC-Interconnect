@@ -25,10 +25,10 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: true   # third_party/riscv-tests, pinned
       - name: Install tools
         run: sudo apt-get update && sudo apt-get install -y iverilog gcc-riscv64-unknown-elf
-      - name: Fetch riscv-tests
-        run: git clone --depth 1 https://github.com/riscv-software-src/riscv-tests.git ../riscv-tests
       - name: rv32ui + rv32um + rv32ua compliance
         run: make isa
       - name: Demo programs on the 4-core SoC (UART output checked)
