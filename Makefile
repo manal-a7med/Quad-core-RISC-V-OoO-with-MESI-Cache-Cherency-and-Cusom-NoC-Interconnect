@@ -2,7 +2,7 @@
 # Makefile: Quad-Core Out-of-Order RISC-V Processor with MESI coherence
 # =============================================================================
 #   make sim         Run all RTL testbenches (fails if any check fails)
-#   make sim-<name>  Run one testbench (mesi arbiter cache core dep corner quad repro)
+#   make sim-<name>  Run one testbench (mesi arbiter cache core dep corner quad noc repro)
 #   make isa         rv32ui, rv32um and rv32ua riscv-tests and system tests on one core (riscv-tests submodule)
 #   make soc-isa     the same programs on the full 4-core SoC with caches (after make isa)
 #   make bench       riscv-tests benchmarks on the 4-core SoC (Verilator; riscv-tests submodule)
@@ -68,7 +68,7 @@ VL_CFG    ?= noc$(NOC_BANKS)
 export NOC NOC_BANKS
 endif
 
-TESTS = mesi arbiter cache core dep corner quad
+TESTS = mesi arbiter cache core dep corner quad noc
 
 .PHONY: all sim $(addprefix sim-,$(TESTS)) sim-repro isa synth soc-isa bench ablation coh-random coh-mutants bench-check regress sw soc-run fpga-sim fpga program lint lint-soc synth-soc synth-fpga results animate gui clean help
 
@@ -102,6 +102,9 @@ sim-dep: | $(OUT_DIR)
 	$(call run,dep,$(CORE_RTL) tb/tb_ooo_dependent_arith.v)
 sim-corner: | $(OUT_DIR)
 	$(call run,corner,$(CORE_RTL) tb/tb_ooo_corner_cases.v)
+# NoC mesh alone: random traffic, no loss, in order per source/destination
+sim-noc: | $(OUT_DIR)
+	$(call run,noc,-I rtl/noc rtl/noc/noc_mesh.v rtl/noc/noc_router.v rtl/noc/noc_tx.v tb/tb_noc_mesh.v)
 sim-quad: | $(OUT_DIR)
 	$(call run,quad,$(SOC_RTL) tb/tb_quad_core.v)
 sim-repro: | $(OUT_DIR)
