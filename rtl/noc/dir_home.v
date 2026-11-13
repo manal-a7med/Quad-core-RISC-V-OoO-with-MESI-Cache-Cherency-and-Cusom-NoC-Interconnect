@@ -156,8 +156,7 @@ module dir_home #(
     // ------------------------------------------------------------------
     // FSM
     // ------------------------------------------------------------------
-    localparam [2:0] H_INIT = 3'd0, H_IDLE = 3'd1, H_PROBE = 3'd2, H_COLLECT = 3'd3,
-                     H_L2 = 3'd4, H_GRANT = 3'd5;
+    localparam [2:0] H_INIT = 3'd0, H_IDLE = 3'd1, H_PROBE = 3'd2, H_WAIT = 3'd3, H_WB = 3'd4;
     reg [3:0] to_probe;                          // probes still to send
     reg [3:0] probed;                            // probes sent in this transaction
     reg [3:0] answered;                          // probe answers received
@@ -176,33 +175,39 @@ module dir_home #(
     // GetS: another copy stays if a probed owner kept one, or a sharer was not probed
     wire shared = |kept || |(others & ~probed);
 
-    // L2 access needed after the probes
-    wire need_l2 = is_putm ? putm_ok : is_upg ? 1'b0 : is_getm ? !dirty : 1'b1;
+    // ------------------------------------------------------------------
+    // L2 access, beside the probes. A GetS or GetM with no other owner reads
+    // the line from the L2 as soon as it is accepted, while any probes are
+    // out (they only invalidate or downgrade clean copies). Writes to the L2 (a PutM, or the dirty
+    // line of a GetS) are done after the grant, before the next request.
+    // ------------------------------------------------------------------
+    reg         l2_act;                          // L2 request in flight
+    reg         l2_wr;                           // ... and it is a write
+    reg         l2_have;                         // L2 data for this request is in `line`
+    reg  [2:0]  l2_cmd_r;
+    reg  [26:0] l2_line_r;
+    reg         wb_pend;                         // write `line` to the L2 after the grant
+    reg  [26:0] wb_line;
 
     always @(*) begin
-        l2_req_valid = 1'b0;
-        l2_req_addr  = {r_line, 5'b0};
-        l2_req_cmd   = r_cmd;
+        l2_req_valid = l2_act && !l2_resp_valid;
+        l2_req_addr  = {l2_line_r, 5'b0};
+        l2_req_cmd   = l2_cmd_r;
         l2_req_wdata = line;
-        if (state == H_L2) begin
-            l2_req_valid = !l2_resp_valid;
-            if (is_putm) begin
-                l2_req_cmd = `BUS_FLUSH; l2_req_wdata = rq_data;
-            end else if (dirty) begin                 // GetS with a dirty owner: update L2
-                l2_req_cmd = `BUS_FLUSH;
-            end else if (is_getm) begin
-                l2_req_cmd = `BUS_READX;
-            end else begin
-                l2_req_cmd = `BUS_READ;
-            end
-        end
     end
+    wire l2_rd_now = l2_act && !l2_wr && l2_resp_valid;    // read data arrives this cycle
 
-    // Outgoing packets: probes in H_PROBE; the grant as soon as the L2
-    // answers (straight from its output), else in H_GRANT
-    wire grant_cyc = (state == H_GRANT) || (state == H_L2 && l2_resp_valid);
+    // Ready to grant: every probe answered and the data is here (if needed)
+    wire data_ok   = is_upg || is_putm || dirty || l2_have || l2_rd_now;
+    wire grant_cyc = (state == H_WAIT) && all_answered && !rs_valid && data_ok;
     wire grant_now = grant_cyc && tx_idle;
-    assign tx_data = (state == H_L2) ? l2_resp_data : line;
+    assign tx_data = (l2_rd_now && !dirty) ? l2_resp_data : line;
+    wire need_wb   = (is_gets && dirty) || putm_ok;
+    // When another cache owns the line (EM) it most likely has it dirty, so
+    // the L2 is read only if its answer brings no data (the L2 port is shared)
+    wire no_spec   = |(others & owner);
+    wire late_rd   = (state == H_WAIT) && all_answered && !rs_valid && (is_gets || is_getm) &&
+                     !dirty && !l2_have && !l2_act;
 
     always @(*) begin
         tx_send = 1'b0;
@@ -261,16 +266,33 @@ module dir_home #(
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            state    <= H_INIT;
-            init     <= 1'b1;
-            init_idx <= 6'd0;
-            to_probe <= 4'd0;
-            probed   <= 4'd0;
-            answered <= 4'd0;
-            presp    <= 8'd0;
-            dirty    <= 1'b0;
-            line     <= 256'd0;
+            state     <= H_INIT;
+            init      <= 1'b1;
+            init_idx  <= 6'd0;
+            to_probe  <= 4'd0;
+            probed    <= 4'd0;
+            answered  <= 4'd0;
+            presp     <= 8'd0;
+            dirty     <= 1'b0;
+            line      <= 256'd0;
+            l2_act    <= 1'b0;
+            l2_wr     <= 1'b0;
+            l2_have   <= 1'b0;
+            l2_cmd_r  <= 3'd0;
+            l2_line_r <= 27'd0;
+            wb_pend   <= 1'b0;
+            wb_line   <= 27'd0;
         end else begin
+            // L2 answers: read data is kept only until the grant, and never
+            // over a dirty line from a probe
+            if (l2_act && l2_resp_valid) begin
+                l2_act <= 1'b0;
+                if (!l2_wr && (state == H_PROBE || state == H_WAIT) && !grant_now) begin
+                    l2_have <= 1'b1;
+                    if (!dirty) line <= l2_resp_data;
+                end
+            end
+
             // Probe answers can arrive while later probes are still being sent
             if (rs_valid) begin
                 answered[rs_hdr[`HDR_SRC]]          <= 1'b1;
@@ -296,27 +318,45 @@ module dir_home #(
                     answered <= 4'd0;
                     presp    <= 8'd0;
                     dirty    <= 1'b0;
-                    // Nobody to probe: go straight to the L2 (or the grant)
-                    if (probe_set == 4'b0000)
-                        state <= (is_putm ? putm_ok : !is_upg) ? H_L2 : H_GRANT;
-                    else
-                        state <= H_PROBE;
+                    l2_have  <= 1'b0;
+                    if ((is_gets || is_getm) && !no_spec) begin  // read the L2 beside the probes
+                        l2_act    <= 1'b1;
+                        l2_wr     <= 1'b0;
+                        l2_cmd_r  <= is_getm ? `BUS_READX : `BUS_READ;
+                        l2_line_r <= r_line;
+                    end
+                    if (putm_ok) line <= rq_data;
+                    state <= (probe_set != 4'b0000) ? H_PROBE : H_WAIT;
                 end
 
                 H_PROBE: begin
                     if (tx_send) to_probe[next_probe] <= 1'b0;
-                    if (to_probe == 4'b0000) state <= H_COLLECT;
+                    if (to_probe == 4'b0000) state <= H_WAIT;
                 end
 
-                H_COLLECT: if (all_answered && !rs_valid)
-                    state <= need_l2 ? H_L2 : H_GRANT;
-
-                H_L2: if (l2_resp_valid) begin
-                    if (!is_putm) line <= l2_resp_data;
-                    state <= tx_idle ? H_IDLE : H_GRANT;     // grant sent now if the sender is free
+                H_WAIT: if (late_rd) begin                   // the owner had no dirty copy
+                    l2_act    <= 1'b1;
+                    l2_wr     <= 1'b0;
+                    l2_cmd_r  <= is_getm ? `BUS_READX : `BUS_READ;
+                    l2_line_r <= r_line;
+                end else if (grant_now) begin
+                    wb_pend <= need_wb;
+                    wb_line <= r_line;
+                    // done, unless the L2 still has work for this request
+                    state   <= (need_wb || (l2_act && !l2_resp_valid)) ? H_WB : H_IDLE;
                 end
 
-                H_GRANT: if (tx_idle) state <= H_IDLE;
+                H_WB: begin                                    // after the grant: L2 write
+                    if (!l2_act && wb_pend) begin
+                        l2_act    <= 1'b1;
+                        l2_wr     <= 1'b1;
+                        l2_cmd_r  <= `BUS_FLUSH;
+                        l2_line_r <= wb_line;
+                        wb_pend   <= 1'b0;
+                    end else if (!wb_pend && (!l2_act || l2_resp_valid)) begin
+                        state <= H_IDLE;
+                    end
+                end
 
                 default: state <= H_IDLE;
             endcase
