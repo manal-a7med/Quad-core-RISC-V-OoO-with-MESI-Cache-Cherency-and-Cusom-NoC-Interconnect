@@ -3,9 +3,9 @@
 # =============================================================================
 #   make sim         Run all RTL testbenches (fails if any check fails)
 #   make sim-<name>  Run one testbench (mesi arbiter cache core dep corner quad repro)
-#   make isa         rv32ui, rv32um and rv32ua riscv-tests and system tests on one core (RISCV_TESTS=<checkout>)
+#   make isa         rv32ui, rv32um and rv32ua riscv-tests and system tests on one core (riscv-tests submodule)
 #   make soc-isa     the same programs on the full 4-core SoC with caches (after make isa)
-#   make bench       riscv-tests benchmarks on the 4-core SoC (Verilator; RISCV_TESTS=<checkout>)
+#   make bench       riscv-tests benchmarks on the 4-core SoC (Verilator; riscv-tests submodule)
 #   make ablation    The benchmarks on builds with one feature off (prediction, OoO issue, MESI E state)
 #   make coh-random  Constrained-random coherence test of the memory system (SEEDS, OPS)
 #   make coh-mutants Check that coh-random fails on six designs with injected coherence bugs
@@ -21,11 +21,11 @@
 #   make synth-fpga  Yosys synth_xilinx of fpga_top (about 15 min), prints LUT/FF/BRAM
 #                    use against the XC7A100T
 #   make synth-fpga-core  Artix-7 LUT/FF estimate for one core (used by results)
-#   make results     Regenerate docs/results/index.html (RISCV_TESTS=<checkout>)
+#   make results     Regenerate docs/results/index.html (riscv-tests submodule)
 #   make animate     MESI terminal walkthrough + animated GIF
 #   make gui         Interactive MESI animation window
 #   make bench-check Compare build/bench/results.txt with the committed reference numbers
-#   make regress     Everything except the slow synthesis and benchmarks (RISCV_TESTS=<checkout>)
+#   make regress     Everything except the slow synthesis and benchmarks (riscv-tests submodule)
 #   make clean       Remove build outputs
 #
 # Tools come from PATH. On Windows override, e.g.
@@ -90,9 +90,15 @@ sim-repro: | $(OUT_DIR)
 	cp review/prog.hex $(OUT_DIR)/
 	$(call run,repro,$(CORE_RTL) review/tb_repro.v)
 
-# rv32ui riscv-tests (needs riscv64-unknown-elf-gcc and a riscv-tests checkout)
-RISCV_TESTS ?= ../riscv-tests
+# riscv-tests: a git submodule pinned to the commit the results were made with.
+# Override with RISCV_TESTS=/path/to/another/checkout.
+RISCV_TESTS ?= third_party/riscv-tests
+check_rvt = @test -d $(RISCV_TESTS)/isa/rv32ui || { echo "riscv-tests not found at $(RISCV_TESTS)."; \
+	echo "Run: git submodule update --init --recursive"; exit 1; }
+
+# rv32ui/um/ua riscv-tests (needs riscv64-unknown-elf-gcc)
 isa:
+	$(check_rvt)
 	sh verif/riscv-tests/run.sh $(RISCV_TESTS)
 
 LINT = $(VERILATOR) --lint-only -Wall -Wno-fatal -Irtl/core -Irtl/cache
@@ -116,13 +122,15 @@ VL_DEFS ?=
 $(OUT_DIR)/vl_$(VL_CFG)/Vtb_soc: $(SOC_RTL) verif/soc/tb_soc.v
 	$(VERILATOR) $(VL_FLAGS) $(VL_DEFS) --top-module tb_soc -Mdir $(OUT_DIR)/vl_$(VL_CFG) $(SOC_RTL) verif/soc/tb_soc.v > /dev/null
 
-# riscv-tests benchmarks on the SoC (RISCV_TESTS=<checkout>); see scripts/bench.sh
+# riscv-tests benchmarks on the SoC (riscv-tests submodule); see scripts/bench.sh
 bench: $(OUT_DIR)/vl_soc/Vtb_soc
+	$(check_rvt)
 	sh scripts/bench.sh $(RISCV_TESTS)
 
 # The benchmarks on five builds: full, no branch prediction, in-order issue,
 # neither, and MSI instead of MESI (see scripts/ablation.sh)
 ablation:
+	$(check_rvt)
 	sh scripts/ablation.sh $(RISCV_TESTS)
 
 # Constrained-random coherence test: random loads, stores, amoadd and LR/SC
@@ -205,6 +213,7 @@ synth-fpga: | $(OUT_DIR)
 	@$(PYTHON) scripts/fpga_report.py $(OUT_DIR)/synth_fpga.log
 
 results:
+	$(check_rvt)
 	sh scripts/viz/collect.sh $(RISCV_TESTS)
 	$(PYTHON) scripts/viz/make_results.py build/viz docs/results/index.html
 

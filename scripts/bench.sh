@@ -18,6 +18,7 @@ CC=riscv64-unknown-elf-gcc
 # (spmv also works but is double-precision soft float: 15 M cycles)
 BENCHES=${*:-"dhrystone median multiply qsort rsort towers vvadd memcpy mt-vvadd mt-matmul"}
 [ -x "$SIM" ] || make -C "$ROOT" -s "${SIM#$ROOT/}"
+SIM=$(cd "$(dirname "$SIM")" && pwd)/$(basename "$SIM")
 
 : > "$OUT/results.txt"
 for b in $BENCHES; do
@@ -34,7 +35,9 @@ for b in $BENCHES; do
   fi
   riscv64-unknown-elf-objcopy -O binary "$OUT/$b.elf" "$OUT/$b.bin"
   od -An -v -tx4 -w4 "$OUT/$b.bin" | tr -d ' ' > "$OUT/$b.hex"
-  "$SIM" +hex="$OUT/$b.hex" +timeout=${TIMEOUT:-20000000} +perf > "$OUT/$b.log" 2>&1 || true
+  # Run from $OUT with a short relative +hex: Verilator 5.020 (Ubuntu 24.04)
+  # crashes in $readmemh on file names longer than 256 characters.
+  (cd "$OUT" && "$SIM" +hex="$b.hex" +timeout=${TIMEOUT:-20000000} +perf) > "$OUT/$b.log" 2>&1 || true
   res=$(grep -o 'RESULT [A-Z]*' "$OUT/$b.log" | head -1 | cut -d' ' -f2 || true)
   tot=$(grep -o 'RESULT PASS cycles=[0-9]*' "$OUT/$b.log" | grep -o '[0-9]*$' || true)
   reg=$(grep -o 'BENCH cycles=[0-9]* instret=[0-9]*' "$OUT/$b.log" | head -1 || true)
