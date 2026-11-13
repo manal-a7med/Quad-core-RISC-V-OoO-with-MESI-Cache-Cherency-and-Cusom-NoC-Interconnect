@@ -282,17 +282,21 @@ the per-feature ablation are in `results/`.
 * A single miss takes longer on the NoC: about 14 to 16 cycles at the CPU
   port with no load, against 9 on the bus, because a request and its line
   each cross the mesh as packets. Benchmarks that run on one hart and miss
-  a lot lose most (rsort runs at 0.71 to 0.83 of the bus speed, memcpy at
-  0.90 to 0.95); the others are within 6 %.
+  a lot lose most (rsort runs at 0.70 to 0.83 of the bus speed, memcpy at
+  0.89 to 0.94); the others are within 6 %.
 * When the four cores miss on different lines at the same time, the NoC
   carries more: the bus stops at about 170 accesses per 1000 cycles, the
   NoC with a home per node and 256-bit links reaches about 260 (1.5x).
-* When cores share lines, the bus is faster: the home has to probe the
-  other cores and wait for their answers, a round trip across the mesh,
-  while the bus snoops everyone in one cycle. On one hot set the NoC gets
-  less than half the bus throughput.
-* Wider links (256-bit flits) and a home per node help most; with both,
-  mt-matmul runs 3 % faster than on the bus and mt-vvadd reaches 0.85.
+* When cores share lines, the NoC with 256-bit links now also carries more
+  than the bus under heavy load (about 200 against 173), thanks to the
+  owner sending the line straight to the requester and the home working on
+  several lines at once. At light load the bus is still quicker (9 against
+  17 cycles), because a probe and its answer cross the mesh while the bus
+  snoops everyone in one cycle.
+* On one hot set (two lines) the bus stays ahead: about 270 against 190
+  accesses per 1000 cycles, since every access there is a probe round.
+* The two multi-thread benchmarks: mt-matmul runs 2 to 5 % faster than on
+  the bus on every NoC build, mt-vvadd at 0.86 to 0.92 of the bus speed.
 
 ## 8. Verification
 
