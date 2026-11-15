@@ -372,14 +372,9 @@ checked against it.
 | [review/README.md](review/README.md) | The testbench that reproduces the original bugs |
 | `docs/detailed_report.md`, `docs/academic_report.md` | Reports from the original repository. They describe the design before this work and are kept for reference |
 
-**History.** The design was imported from
-[Ratan-Y-Mallya/Major-project](https://github.com/Ratan-Y-Mallya/Major-project).
-A design review found 18 bugs, several of which stopped real programs from
-running. The work since then follows the roadmap: P0 build and CI, P1 a
+**Basic Flow** 
+The work follows the roadmap: P0 build and CI, P1 a
 correct core, P2 FPGA readiness, P3 multicore software (atomics, fences,
 coherence tests), P4 performance (fetch, branch prediction, multiply and
-divide). A network-on-chip with directory coherence (P5, P6) and an ASIC flow
+divide), a network-on-chip with directory coherence (P5, P6). An ASIC flow
 (P7) are planned as later stretch work.
-
-**Status:** P0 to P3 and the first part of P4 are complete in simulation.
-Vivado and board results are pending.
