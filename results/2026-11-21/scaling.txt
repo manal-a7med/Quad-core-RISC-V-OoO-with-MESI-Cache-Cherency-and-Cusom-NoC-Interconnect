@@ -1,0 +1,28 @@
+# Parallel speed-up (make scaling), RTL of the commit that added this file. gcc 13.2.0 -O2, riscv-tests
+# multi-thread benchmarks; NCORES harts share the work, the others park. The 1-core run is the no-contention baseline.
+
+Parallel speed-up of the multi-thread benchmarks (make scaling).
+Timed-region cycles on 1, 2 and 4 cores; in brackets: speed-up over 1 core
+of the same build, and efficiency (speed-up / cores).
+
+bus:
+  benchmark      1 core                 2 cores                 4 cores
+  mt-vvadd       254440     146901 (1.73x, 87%)      89404 (2.85x, 71%)
+  mt-matmul       45901      24112 (1.90x, 95%)      14001 (3.28x, 82%)
+  mt-memcpy      189935      95877 (1.98x, 99%)      51348 (3.70x, 92%)
+
+noc1:
+  benchmark      1 core                 2 cores                 4 cores
+  mt-vvadd       269471     161626 (1.67x, 83%)     104179 (2.59x, 65%)
+  mt-matmul       46790      24754 (1.89x, 95%)      13725 (3.41x, 85%)
+  mt-memcpy      207975     106352 (1.96x, 98%)      56470 (3.68x, 92%)
+
+noc4_f256:
+  benchmark      1 core                 2 cores                 4 cores
+  mt-vvadd       267588     156955 (1.70x, 85%)      96917 (2.76x, 69%)
+  mt-matmul       46634      24469 (1.91x, 95%)      13359 (3.49x, 87%)
+  mt-memcpy      205720     103498 (1.99x, 99%)      54078 (3.80x, 95%)
+
+4-core run relative to the bus (above 1.00 = faster than the bus):
+  noc1: mt-vvadd 0.86, mt-matmul 1.02, mt-memcpy 0.91
+  noc4_f256: mt-vvadd 0.92, mt-matmul 1.05, mt-memcpy 0.95

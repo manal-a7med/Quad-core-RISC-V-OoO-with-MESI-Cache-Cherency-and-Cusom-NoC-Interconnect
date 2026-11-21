@@ -1,0 +1,53 @@
+# Bus vs mesh at 4, 9 and 16 cores (make mesh-scaling), model of the commit that added this file.
+# The SoC's NoC is 2x2, so larger systems are a calibrated model (verif/scaling/tb_mesh_scaling.v):
+# calibrated on results/2026-11-13/traffic.txt (bus and noc4_f256, private lines, 4 cores). The bus model
+# is the same for every pattern, and keeps a 1-cycle bus at 9 and 16 cores (optimistic for the bus).
+
+Bus vs mesh as the core count grows (model, verif/scaling/tb_mesh_scaling.v, 400 misses per core).
+Each cell: misses per 1000 cycles (all cores) / average miss latency in cycles. gap = mean idle
+cycles between a core's misses (smaller = more load). mesh/bus = mesh throughput over bus throughput.
+
+pattern 0: private lines
+  cores   gap                bus               mesh  mesh/bus
+      4    64        53.1 /  9.9        50.7 / 14.1      0.95
+      4    16       138.6 / 12.6       131.9 / 14.2      0.95
+      4     4       166.6 / 20.4       218.3 / 14.5      1.31
+      4     0       166.6 / 23.9       271.8 / 14.5      1.63
+      9    64       114.3 / 13.2       111.3 / 15.6      0.97
+      9    16       166.6 / 38.4       273.3 / 15.9      1.64
+      9     4       166.6 / 50.4       442.4 / 16.2      2.66
+      9     0       166.6 / 53.9       528.1 / 16.4      3.17
+     16    64       162.8 / 32.3       188.1 / 17.1      1.16
+     16    16       166.6 / 80.4       459.4 / 17.4      2.76
+     16     4       166.6 / 92.3       714.8 / 17.7      4.29
+     16     0       166.6 / 95.8       841.5 / 17.8      5.05
+
+pattern 1: shared lines (half the misses forwarded by an owner)
+  cores   gap                bus               mesh  mesh/bus
+      4    64        53.1 /  9.9        48.9 / 15.7      0.92
+      4    16       138.6 / 12.6       124.9 / 16.0      0.90
+      4     4       166.6 / 20.4       200.4 / 16.2      1.20
+      4     0       166.6 / 23.9       244.1 / 16.2      1.47
+      9    64       114.3 / 13.2       107.8 / 17.6      0.94
+      9    16       166.6 / 38.4       261.2 / 17.9      1.57
+      9     4       166.6 / 50.4       406.9 / 18.1      2.44
+      9     0       166.6 / 53.9       479.0 / 18.3      2.88
+     16    64       162.8 / 32.3       185.6 / 19.5      1.14
+     16    16       166.6 / 80.4       435.7 / 19.7      2.62
+     16     4       166.6 / 92.3       649.5 / 20.0      3.90
+     16     0       166.6 / 95.8       748.7 / 20.1      4.49
+
+pattern 2: hotspot (every miss to one home)
+  cores   gap                bus               mesh  mesh/bus
+      4    64        53.1 /  9.9        49.9 / 14.5      0.94
+      4    16       138.6 / 12.6       120.1 / 15.6      0.87
+      4     4       166.6 / 20.4       185.4 / 16.8      1.11
+      4     0       166.6 / 23.9       199.7 / 19.9      1.20
+      9    64       114.3 / 13.2       106.0 / 18.1      0.93
+      9    16       166.6 / 38.4       188.7 / 28.8      1.13
+      9     4       166.6 / 50.4       196.8 / 40.7      1.18
+      9     0       166.6 / 53.9       199.8 / 44.9      1.20
+     16    64       162.8 / 32.3       170.4 / 25.7      1.05
+     16    16       166.6 / 80.4       194.6 / 63.0      1.17
+     16     4       166.6 / 92.3       198.7 / 75.2      1.19
+     16     0       166.6 / 95.8       199.9 / 79.8      1.20
