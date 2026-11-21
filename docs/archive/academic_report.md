@@ -3,8 +3,8 @@
 > **Note (2026-11-12).** This report describes the design as it was imported from the
 > original repository. Several of its statements do not match the current code (for example
 > "superscalar", the 16-entry BTB, the inclusive L2, the resource estimates and the clock
-> frequency). The current reference is [architecture.md](architecture.md); the differences
-> are listed as D1 to D18 in the design review linked from [plan/README.md](plan/README.md).
+> frequency). The current reference is [architecture.md](../architecture.md); the differences
+> are listed as D1 to D18 in the design review linked from [plan/README.md](../plan/README.md).
 
 ---
 
@@ -136,7 +136,7 @@ The RISC-V RV32I base integer instruction set was selected for the following tec
 
 The processor implements a 6-stage out-of-order pipeline divided into three regions:
 
-![OoO Pipeline Architecture](C:/Users/ymrat/OneDrive/Desktop/project/docs/ooo_pipeline_diagram.jpg)
+![OoO Pipeline Architecture](../ooo_pipeline_diagram.jpg)
 
 **Figure 1**: Out-of-order pipeline architecture showing the three execution regions (In-Order Front End, Out-of-Order Execution, In-Order Commit) and the interconnection between all 10 functional modules.
 

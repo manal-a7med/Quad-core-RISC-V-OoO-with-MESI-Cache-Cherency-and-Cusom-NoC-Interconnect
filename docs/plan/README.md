@@ -1,39 +1,45 @@
 # Project plan and design review
 
-The working plan for carrying this design to FPGA and later ASIC lives in three
-living documents (kept outside the repo so they can be commented on):
+The working plan lives in four living documents, kept outside the repo so
+they can be commented on:
 
 | Document | What it covers |
 |---|---|
-| [Design review and FPGA readiness plan](https://claude.ai/artifact/7aUjMNPskuKsYJMgnQdEBK) | 18 RTL bugs, 11 FPGA blockers, 18 doc inconsistencies, repo hygiene, and the 8-phase roadmap |
-| [Verification and benchmarking strategy](https://claude.ai/artifact/D7Gc5MmsVvPDjYL7GPkim3) | Verification layers, per-block plan, coherence/memory-model checks, coverage and regression tiers, benchmark suite, baselines B0-B4 / N1-N2, measurement infrastructure |
-| [Project debrief](https://claude.ai/artifact/SsBZ9FbDEvC3xLPtwwLTE6) | Plain-language account of what was done in P0 to P4 and why, the bugs, the measurements, what a 2-wide core would take, and what remains |
+| [Design review and roadmap](https://claude.ai/artifact/7aUjMNPskuKsYJMgnQdEBK) | The 18 bugs found in the imported RTL, doc inconsistencies, repo hygiene, and the roadmap with a checklist and status per phase |
+| [Verification and benchmarking strategy](https://claude.ai/artifact/D7Gc5MmsVvPDjYL7GPkim3) | Verification layers, coherence and memory-model checks, coverage, regression tiers, benchmarks and baselines |
+| [Project debrief](https://claude.ai/artifact/SsBZ9FbDEvC3xLPtwwLTE6) | Plain-language account of what was done and why, including the NoC build |
+| [Project review and improvements](https://claude.ai/artifact/9RL4WgFkAAA9UCwzcYdMDY) | Proposal vs project, inconsistencies, weak spots, and the ranked improvement list being worked through |
 
-## Roadmap (8 phases)
+In the repo: [../scope.md](../scope.md) (scope, changes from the proposal,
+reused vs original code) and [../bugs.md](../bugs.md) (every bug found).
 
-The evaluated project is **P0 to P4** (snooping-bus MESI, running on the FPGA).
-P5 to P7 (NoC + directory, bus vs NoC evaluation, ASIC) are optional stretch
-work, started only once P0 to P4 are complete.
+## Scope (21 Nov 2026)
 
-| Phase | Goal | Exit gate |
-|---|---|---|
-| P0 | Build, CI, repo hygiene | Clean Yosys synth + all TBs green in CI |
-| P1 | Core correctness fixes (JAL, AUIPC, LSQ, flush) | `review/tb_repro.v` all pass, riscv-tests pass |
-| P2 | FPGA bring-up (BRAM mapping, program load, clocks) | Fits XC7A100T, runs a program on the board; perf counters live |
-| P3 | Multicore software support (mhartid, atomics, FENCE) | Litmus tests and a parallel kernel pass on 4 cores |
-| P4 | Core and memory performance on the bus | Baselines B0-B4 measured; speed-ups reported |
-| P5 | 2x2 mesh NoC + directory MESI at inclusive L2 | Same coherence suite passes; bus kept as golden reference |
-| P6 | Bus vs NoC evaluation | N1/N2 vs B4 latency, throughput and scaling results |
-| P7 | ASIC flow | Synthesis, P&R and sign-off reports |
+The project is evaluated in simulation. **FPGA work is on hold** and not part
+of the evaluated scope: the FPGA files stay in the repo, but no FPGA result is
+claimed. The evaluated design is the 4-core SoC with two interconnects that
+share the same cores, L1s, L2 and memory: the snooping bus (baseline) and the
+2x2 mesh NoC with a directory (the interconnect contribution).
+
+## Roadmap
+
+| Phase | Goal | Exit gate | State |
+|---|---|---|---|
+| P0 | Build, CI, repo hygiene | Clean Yosys synth, all testbenches green in CI | Done |
+| P1 | Core correctness fixes (JAL, AUIPC, LSQ, flush) | `review/tb_repro.v` passes, riscv-tests pass | Done |
+| P2 | System bring-up: memory map, I/O, program loading | C programs run on the 4-core SoC in simulation | Done in simulation; the FPGA half is on hold |
+| P3 | Multicore software support (mhartid, atomics, FENCE, FENCE.I) | Litmus tests and parallel kernels pass on 4 cores | Done |
+| P4 | Core and memory performance on the bus | Baselines measured, speed-ups reported | Done (fetch, prediction, multiply/divide) |
+| P5 | 2x2 mesh NoC + directory MESI (duplicate L1 tags, no inclusive L2) | The same coherence suite passes; the bus stays the reference | Done |
+| P6 | Bus vs NoC evaluation | Latency, throughput and benchmark results, bus vs NoC | Done for 4 cores; scaling study under way |
+| P7 | ASIC flow | Synthesis, place and route, sign-off reports | Not started (later stretch work) |
 
 ## Two performance stages
 
-P4 is the performance result for the project itself; P6 applies only if the
-NoC stretch work goes ahead. Performance is measured twice on purpose. **P4** proves the core and cache
-upgrades on the snooping bus (and creates enough concurrent memory traffic for
-the interconnect to matter). **P6** compares the bus against the NoC +
-directory design using the same benchmarks, counters and RTL switches, so the
-interconnect result is an apples-to-apples comparison.
+Performance is measured twice on purpose. **P4** proves the core and cache
+upgrades on the snooping bus. **P6** compares the bus against the NoC and
+directory using the same benchmarks, counters and build switches, so the
+difference comes from the interconnect alone.
 
 ## Reproducing the known bugs
 
