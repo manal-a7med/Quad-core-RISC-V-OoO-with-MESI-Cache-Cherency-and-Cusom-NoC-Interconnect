@@ -24,6 +24,7 @@
 #   make synth       Yosys generic synthesis of one core (fast check, used by CI)
 #   make synth-soc   Yosys generic synthesis of quad_core_top
 #   make results     Regenerate docs/results/index.html (riscv-tests submodule)
+#   make visuals     Presentation charts in results/visual/ from the committed results (matplotlib)
 #   make animate     MESI terminal walkthrough + animated GIF
 #   make gui         Interactive MESI animation window
 #   make bench-check Compare build/bench/results.txt with the committed reference numbers
@@ -83,7 +84,7 @@ endif
 
 TESTS = mesi arbiter cache core dep corner quad noc
 
-.PHONY: formal traffic mesh-scaling scaling coverage core-mutants compare-ic all sim $(addprefix sim-,$(TESTS)) sim-repro isa synth soc-isa bench ablation coh-random coh-mutants bench-check regress sw soc-run fpga-sim fpga program lint lint-soc synth-soc synth-fpga results animate gui clean help
+.PHONY: visuals formal traffic mesh-scaling scaling coverage core-mutants compare-ic all sim $(addprefix sim-,$(TESTS)) sim-repro isa synth soc-isa bench ablation coh-random coh-mutants bench-check regress sw soc-run fpga-sim fpga program lint lint-soc synth-soc synth-fpga results animate gui clean help
 
 all: sim
 
@@ -234,8 +235,10 @@ $(OUT_DIR)/coh_random.vvp: $(SOC_RTL) verif/coherence/tb_coh_random.v | $(OUT_DI
 RV_CC      ?= riscv64-unknown-elf-gcc
 RV_OBJCOPY ?= riscv64-unknown-elf-objcopy
 RV_OBJDUMP ?= riscv64-unknown-elf-objdump
-RV_CFLAGS   = -march=rv32ima_zicsr -mabi=ilp32 -O2 -ffreestanding -fno-builtin -nostdlib -nostartfiles \
-              -Wl,--no-warn-rwx-segments -Isw/common -T sw/common/link.ld
+# rv_flags.sh drops what an older GCC/binutils (Ubuntu 22.04) does not accept
+RV_MFLAGS   = $(shell sh scripts/rv_flags.sh $(RV_CC) rv32ima_zicsr)
+RV_CFLAGS   = $(RV_MFLAGS) -mabi=ilp32 -O2 -ffreestanding -fno-builtin -nostdlib -nostartfiles \
+              -Isw/common -T sw/common/link.ld
 SW_PROGS    = $(notdir $(filter-out sw/common sw/bench,$(wildcard sw/*)))
 PROG       ?= hello
 
@@ -292,6 +295,10 @@ results:
 	$(check_rvt)
 	sh scripts/viz/collect.sh $(RISCV_TESTS)
 	$(PYTHON) scripts/viz/make_results.py build/viz docs/results/index.html
+
+# Presentation charts (PNG) from the committed numbers in results/ (needs matplotlib)
+visuals:
+	$(PYTHON) scripts/viz/make_visuals.py results results/visual
 
 synth-fpga-core: | $(OUT_DIR)
 	$(YOSYS) -q -l $(OUT_DIR)/synth_fpga_core.log -p "read_verilog -DSYNTHESIS -I rtl/core $(CORE_RTL); synth_xilinx -family xc7 -top riscv_ooo_core; stat"

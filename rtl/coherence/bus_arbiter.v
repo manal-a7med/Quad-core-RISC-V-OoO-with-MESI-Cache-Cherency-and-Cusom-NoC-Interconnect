@@ -84,6 +84,10 @@ module bus_arbiter (
     function [1:0] f_pick(input [1:0] lg, input [3:0] r);
         f_pick = r[lg + 2'd1] ? lg + 2'd1 : r[lg + 2'd2] ? lg + 2'd2 : r[lg + 2'd3] ? lg + 2'd3 : lg;
     endfunction
+    // how many places core c comes after the previous winner (0..3)
+    function [2:0] f_dist(input [1:0] c, input [1:0] lg);
+        f_dist = {1'b0, c - lg};
+    endfunction
     always @(*) if (!f_init) begin
         assume ((f_req_q & ~grant & ~req) == 4'b0);             // requests are held
         assert ((grant & (grant - 4'd1)) == 4'b0);               // at most one grant
@@ -96,7 +100,7 @@ module bus_arbiter (
         for (f_c = 0; f_c < 4; f_c = f_c + 1) begin
             assert (f_wait[f_c] <= 3'd3);                         // no starvation
             if (f_wait[f_c] != 3'd0) assert (f_req_q[f_c] &&      // (induction invariant)
-                f_wait[f_c] + {1'b0, f_c[1:0] - last_grant} <= 3'd4);
+                f_wait[f_c] + f_dist(f_c, last_grant) <= 3'd4);
         end
     end
 `endif

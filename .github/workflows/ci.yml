@@ -91,3 +91,24 @@ jobs:
         with:
           name: synth-log
           path: build/synth.log
+
+  ubuntu-2204:
+    # The stock Ubuntu 22.04 tools (Icarus 11, GCC 10.2, Yosys 0.9). Verilator 5
+    # is built by scripts/setup_ubuntu.sh there; not repeated here (slow).
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true   # third_party/riscv-tests, pinned
+      - name: Install tools
+        run: sudo apt-get update && sudo apt-get install -y iverilog gcc-riscv64-unknown-elf yosys python3-matplotlib
+      - name: RTL testbenches and ISA tests
+        run: make sim && make isa
+      - name: Demo programs, bus and NoC
+        run: make soc-run PROG=hello && make soc-run PROG=litmus && make soc-run NOC=1 PROG=atomics
+      - name: Constrained-random coherence test
+        run: make coh-random
+      - name: Formal proof and synthesis
+        run: make formal && make synth
+      - name: Presentation charts
+        run: make visuals

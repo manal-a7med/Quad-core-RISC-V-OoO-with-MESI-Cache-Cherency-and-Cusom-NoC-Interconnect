@@ -14,13 +14,14 @@ TESTS=${*:-$(cd "$RVT/isa/rv32ui" && ls *.S | sed 's/\.S$//' | grep -v -e ma_dat
 UA_TESTS=$( [ -n "$*" ] || (cd "$RVT/isa/rv32ua" && ls *.S | sed 's/\.S$//') )
 # NO_M=1 skips rv32um (for copies of the core from before RV32M)
 UM_TESTS=$( [ -n "$*" ] || [ -n "$NO_M" ] || (cd "$RVT/isa/rv32um" && ls *.S | sed 's/\.S$//') )
+RVF=$(sh "$ROOT/scripts/rv_flags.sh" "$CC" rv32ima_zicsr_zifencei)
 SYS_TESTS=$(ls "$ROOT"/verif/system/*.S 2>/dev/null || true)
 
 iverilog -g2012 -DSIM $ISA_DEFS -I "$RTL" -I "$ROOT/verif" -o "$OUT/tb_isa.vvp" "$RTL"/*.v "$HERE/tb_isa.v"
 
 pass=0; fail=0; : > "$OUT/summary.txt"
 run_one() {   # run_one <name> <source.S>
-  $CC -march=rv32ima_zicsr_zifencei -mabi=ilp32 -static -nostdlib -nostartfiles -Wl,--no-warn-rwx-segments \
+  $CC $RVF -mabi=ilp32 -static -nostdlib -nostartfiles \
       -I "$HERE/env" -I "$RVT/isa/macros/scalar" -T "$HERE/env/link.ld" "$2" -o "$OUT/$1.elf"
   $OBJCOPY -O binary "$OUT/$1.elf" "$OUT/$1.bin"
   od -An -v -tx4 -w4 "$OUT/$1.bin" | tr -d ' ' > "$OUT/$1.hex"

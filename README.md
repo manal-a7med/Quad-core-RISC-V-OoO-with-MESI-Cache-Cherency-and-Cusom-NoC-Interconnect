@@ -55,7 +55,8 @@ The 24 bugs found and fixed along the way are listed in
 
 A visual summary for evaluators is in
 [docs/results/index.html](docs/results/index.html) (download it and open it in
-a browser).
+a browser). Charts for presentations and a slide deck with a short explanation
+of each result are in [results/visual/](results/visual/) (`make visuals`).
 
 ## Contents
 
@@ -63,6 +64,8 @@ a browser).
 - [Repository layout](#repository-layout)
 - [Install the tools](#install-the-tools)
   - [Linux (Ubuntu 24.04)](#linux-ubuntu-2404)
+  - [Linux (Ubuntu 22.04)](#linux-ubuntu-2204)
+  - [Docker (any system, exact tool versions)](#docker-any-system-exact-tool-versions)
   - [Windows (WSL 2)](#windows-wsl-2)
 - [Quick start](#quick-start)
 - [Reproduce every result](#reproduce-every-result)
@@ -136,7 +139,7 @@ The full description, written from the code, is in
 | `review` | Testbench reproducing the bugs found in the design review |
 | `scripts` | Test runners, mutation tests, benchmark, coverage, scaling and formal scripts, results page generator |
 | `synth` | Nexys A7 constraints, Vivado build and program scripts (FPGA on hold) |
-| `results` | Benchmark numbers, one folder per date |
+| `results` | Benchmark numbers, one folder per date; `results/visual` holds the presentation charts and slide deck |
 | `docs` | Architecture, scope, bug list, plan, results page; `docs/archive` holds the reports from the original repository |
 
 ## Install the tools
@@ -153,13 +156,13 @@ and Python 3. These are the versions Ubuntu 24.04 installs.
 | riscv-tests (included as a git submodule; nothing to install) | ISA tests and benchmarks |
 | Verilator 5.x | `make bench`, `make ablation`, `make lint` |
 | Yosys | `make synth`, `make formal` |
-| `python3-matplotlib`, `python3-numpy` (optional) | `make animate` and `make gui` only |
+| `python3-matplotlib`, `python3-numpy` (optional) | `make visuals`, `make animate` and `make gui` only |
 
 ### Linux (Ubuntu 24.04)
 
 ```
 sudo apt-get update
-sudo apt-get install -y git make python3 iverilog verilator yosys gcc-riscv64-unknown-elf
+sudo apt-get install -y git make python3 python3-matplotlib iverilog verilator yosys gcc-riscv64-unknown-elf
 
 git clone --recurse-submodules https://github.com/manal-a7med/Quad-core-RISC-V-OoO-with-MESI-Cache-Cherency-and-Cusom-NoC-Interconnect.git
 cd Quad-core-RISC-V-OoO-with-MESI-Cache-Cherency-and-Cusom-NoC-Interconnect
@@ -178,9 +181,50 @@ git submodule update --init --recursive
 To use a different riscv-tests checkout, add `RISCV_TESTS=/path/to/riscv-tests`
 to the `make isa`, `make bench`, `make regress` and `make results` commands.
 
+`sh scripts/setup_ubuntu.sh` does all of this in one step (it also fetches the
+riscv-tests submodule if it is missing).
+
 Other distributions: install the same tools with your package manager.
-Ubuntu 22.04 ships Verilator 4, which is too old for `make bench`; everything
-else works there.
+
+### Linux (Ubuntu 22.04)
+
+Ubuntu 22.04 has older tools: Icarus Verilog 11, Yosys 0.9, RISC-V GCC 10.2
+and Verilator 4.038. Everything works with them except the Verilator model,
+which needs Verilator 5. The setup script installs the rest from apt and
+builds Verilator 5.020 from source into `/usr/local` (about 10 minutes, once):
+
+```
+sudo apt-get update && sudo apt-get install -y git
+git clone --recurse-submodules https://github.com/manal-a7med/Quad-core-RISC-V-OoO-with-MESI-Cache-Cherency-and-Cusom-NoC-Interconnect.git
+cd Quad-core-RISC-V-OoO-with-MESI-Cache-Cherency-and-Cusom-NoC-Interconnect
+sh scripts/setup_ubuntu.sh
+make regress
+```
+
+Tested on 21 Nov 2026 from a fresh clone in an Ubuntu 22.04 container:
+`make regress`, `make formal`, `make synth`, `make lint`, `make bench` and
+`make visuals` all pass. Without Verilator 5 (`SKIP_VERILATOR=1`) everything
+except `make bench`, `make ablation`, `make compare-ic`, `make scaling` and
+`make lint` still works.
+
+GCC 10 compiles the benchmarks a little differently from GCC 13, so
+`make bench` on 22.04 gives slightly different cycle counts from the committed
+ones (most within 1 %; towers 19 % slower, mt-matmul 10 % faster, median 5 %
+faster). The hardware is the same; the programs differ. For the exact
+published numbers use Ubuntu 24.04 or the Docker image below.
+
+### Docker (any system, exact tool versions)
+
+The `Dockerfile` gives the exact Ubuntu 24.04 tool versions the results were
+made with, on any machine with Docker (Ubuntu 22.04, other Linux, macOS,
+Windows):
+
+```
+docker build -t quadcore .
+docker run --rm -it -v "$PWD":/work -u "$(id -u):$(id -g)" quadcore make regress
+```
+
+Any `make` target works the same way, for example `... quadcore make bench`.
 
 ### Windows (WSL 2)
 
