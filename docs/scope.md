@@ -33,17 +33,17 @@ why.
 | Proposal | Built | Why |
 |---|---|---|
 | 2 cores | 4 cores | The imported design already had four cores. Four cores also make the interconnect matter, which is the point of the NoC comparison. |
-| A verified superscalar OoO core, used unmodified | A single-issue OoO core, repaired and extended | A review found 18 bugs in the imported RTL, several of which stopped real programs from running, and 5 more were found later ([bugs.md](bugs.md)). The core was never superscalar. It had no CSRs, traps, multiply, atomics or branch predictor, and these were added. |
+| A verified superscalar OoO core, used unmodified | A single-issue OoO core, repaired and extended | A review found 18 bugs in the imported RTL, several of which stopped real programs from running, and 6 more were found later ([bugs.md](bugs.md)). The core was never superscalar. It had no CSRs, traps, multiply, atomics or branch predictor, and these were added. |
 | RV32I / RV32IM | RV32IMA + Zicsr + Zifencei, machine mode | Multicore software needs atomics (A), `mhartid` and traps; benchmarks need M. |
 | 2-level adaptive branch predictor (in the core) | 256 two-bit counters, 8-entry return stack, 16-entry indirect target table | The imported core predicted every branch not taken. A simple predictor gave most of the speed-up. |
 | Point-to-point / ring link, round-robin, credit-based flow control | Snooping bus (baseline) and a 2x2 mesh with XY wormhole routers and valid/ready flow control (`NOC=1`) | A 2-node link does not scale to 4 cores. Valid/ready with small FIFOs gives the same "never overflow" guarantee as credits on one-cycle links, with less logic. Credits matter when a link is several cycles long. |
 | MSI, MESI as a stretch | MESI; MSI kept as a build switch (`CFG_MSI`) for measurement | The imported design already used MESI. |
 | Snooping only; directory as future scope | Snooping bus and a duplicate-tag directory with 1 or 4 homes | The NoC needs a directory, because a mesh has no broadcast. |
 | LSQ squash and replay of a speculative load hit by a snoop | Not needed; loads of the same bytes are performed in program order, one cache access at a time | RISC-V's memory model (RVWMO) only needs same-address loads in order. See [architecture.md §2.1](architecture.md#21-memory-ordering-and-why-no-load-replay-is-needed); `sw/ldorder` and `make core-mutants` test it. |
-| Directed tests, random tests, SVA, functional coverage report (95 %+) | Directed tests, riscv-tests, random coherence tester, 9 mutants, litmus tests, SVA, functional coverage (`make coverage`) | Mutation tests were added to prove that the checks catch real bugs. |
+| Directed tests, random tests, SVA, functional coverage report (95 %+) | Directed tests, riscv-tests, random coherence tester, mutation tests (7 coherence bugs on the bus, 9 on the NoC, 2 in the core), litmus tests, SVA, functional coverage (`make coverage`: every reachable bin hit) | Mutation tests were added to prove that the checks catch real bugs. |
 | Simulation demo required, FPGA as a stretch | Simulation only; FPGA on hold | As in the proposal: FPGA was always optional. |
 | QuestaSim / Xcelium, or Icarus + cocotb | Icarus Verilog 12 and Verilator 5 | Free tools, so anyone can repeat every result. |
-| Stretch: IPC vs an idealised no-contention baseline | 1/2/4-core speed-up and an ideal-memory run (`make scaling`) | |
+| Stretch: IPC vs an idealised no-contention baseline | Speed-up of the parallel benchmarks on 1, 2 and 4 cores (`make scaling`); the 1-core run is the no-contention baseline | Plus a model of the bus and the mesh at 4, 9 and 16 cores (`make mesh-scaling`), since the NoC in the SoC is 2x2 |
 
 Things the proposal listed as **future scope** that were done: four cores
 (12.1), a 2x2 mesh with XY routing and buffered routers (12.1), and directory
@@ -67,13 +67,13 @@ should cover all of it, not only the core.
 
 | Part | Imported | Now | Since the import |
 |---|---|---|---|
-| RTL (`rtl/`) | 3,850 lines, 24 files | 6,800 lines, 40 files | 4,030 lines added, 1,080 removed; 16 new files |
+| RTL (`rtl/`) | 3,850 lines, 24 files | 6,900 lines, 40 files | 4,130 lines added, 1,080 removed; 16 new files |
 | Testbenches (`tb/`) | 7 testbenches | 8 | Moved from `test_bench/`, fixed, plus `tb_noc_mesh.v` |
-| System tests (`verif/`) | none | 1,050 lines | All new |
-| Software (`sw/`) | none | 1,120 lines | All new |
-| Scripts (`scripts/`) | `mesi_visualizer.py` | 13 scripts | 12 new |
+| System tests (`verif/`) | none | 1,700 lines | All new |
+| Software (`sw/`) | none | 1,150 lines | All new |
+| Scripts (`scripts/`) | `mesi_visualizer.py` | 17 scripts, plus the results-page generator in `scripts/viz` | 16 new |
 
-About 41 % of today's RTL lines are imported lines that were kept; 59 % were
+About 40 % of today's RTL lines are imported lines that were kept; 60 % were
 written in this project.
 
 ### File by file (RTL)
@@ -90,14 +90,14 @@ written in this project.
 | `core/load_store_unit.v` | Mostly rewritten (forwarding, ordering, flush) | +263 / −106 |
 | `core/riscv_ooo_core.v` | Reworked | +248 / −33 |
 | `core/csr_file.v`, `core/muldiv_unit.v`, `core/amo.vh` | New | |
-| `cache/l1_dcache.v` | Mostly rewritten (races, handshake, atomics) | +347 / −267 |
+| `cache/l1_dcache.v` | Mostly rewritten (races, handshake, atomics, bug 24, assertions) | +387 / −269 |
 | `cache/l1_icache.v` | Mostly rewritten (pipelined, coherent fills) | +93 / −114 |
 | `cache/l2_cache.v` | Reworked | +161 / −80 |
 | `cache/cache_controller.v` | Reused, unused | unchanged |
 | `cache/mesi_defines.vh` | Reused | +3 / −2 |
 | `coherence/mesi_protocol.v` | Reused | +2 / −2 |
-| `coherence/snoop_controller.v` | Reused | +3 / −2 |
-| `coherence/bus_arbiter.v` | Reused | +1 / −1 |
+| `coherence/snoop_controller.v` | Reused, plus an assertion | +12 / −2 |
+| `coherence/bus_arbiter.v` | Reused, plus formal properties (`ifdef FORMAL`) | +43 / −1 |
 | `coherence/coherence_bus.v` | Reused, trimmed | +17 / −41 |
 | `coherence/coh_port.vh`, `coherence/bus_interconnect.v` | New (common L1 port, so bus and NoC are swappable) | |
 | `noc/*` (8 files: routers, mesh, network interfaces, directory home) | New | 1,570 lines |
@@ -111,7 +111,7 @@ written in this project.
 controller and the bus arbiter are reused almost unchanged, so the coherence
 *protocol* should not be claimed as original. The original contributions are:
 
-1. finding and fixing 23 bugs, and making the system run real C programs on
+1. finding and fixing 24 bugs, and making the system run real C programs on
    four cores;
 2. the multicore ISA support (atomics, fences, CSRs, traps, FENCE.I) and the
    race-free L1 data cache;

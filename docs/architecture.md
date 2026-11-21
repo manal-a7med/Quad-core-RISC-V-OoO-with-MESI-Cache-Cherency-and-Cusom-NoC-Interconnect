@@ -11,8 +11,9 @@ out-of-order** core with private L1 caches. The four L1 data caches are kept
 coherent with the MESI protocol over a snooping bus (or, built with `NOC=1`,
 over a 2x2 mesh network with a directory; section 4.2), in front of a shared
 L2 cache and a 64 KB main memory. A small I/O block (UART, LEDs, 7-segment
-display) sits beside the caches. The FPGA target is the Digilent Nexys A7-100T
-(Xilinx XC7A100T) at 50 MHz.
+display) sits beside the caches. The design was written for the Digilent
+Nexys A7-100T (Xilinx XC7A100T) at 50 MHz, but FPGA work is on hold (section
+6): every result in this file comes from simulation.
 
 "Single-issue" means one instruction is fetched, renamed, issued and committed
 per cycle. The core is not superscalar.
@@ -173,6 +174,16 @@ reservation on a line; the reservation is lost when a snoop invalidates the
 line or another line is filled, and SC then fails. AMOs run in one cycle on a
 line held in M or E.
 
+**Dirty victims.** A miss that replaces a line in M first writes it back
+(Flush), then fetches the new line. Between choosing the victim and getting
+the bus, a snoop can take the victim: after a BusRdX another cache owns it,
+and after a BusRd its data is already in the L2 and the line is clean. The
+cache checks the victim's state again before it sends the Flush: if the line
+is no longer M, the write-back is dropped, because a late Flush would put old
+data over newer data in the L2 (bug 24, fixed 21 Nov 2026). In the NoC build
+the write-back (PutM) may already be in the network, so the home ignores a
+PutM from a core that no longer owns the line instead.
+
 Building with `CFG_MSI` never grants E (measurement only; see
 `scripts/ablation.sh`).
 
@@ -295,7 +306,12 @@ single-writer assertion at the grant, before any cache misbehaves.
 All harts reset to PC 0. Start-up code reads `mhartid`; hart 0 clears `.bss`
 and sets BOOT, the others wait for it.
 
-## 6. FPGA
+## 6. FPGA (on hold)
+
+FPGA work is on hold since 21 Nov 2026 and is not part of the evaluated
+results (see [scope.md](scope.md)). The files stay in the repo, and
+`make fpga-sim` still runs the programs through the board wrapper as a
+system test.
 
 `rtl/top/fpga_top.v` wraps `quad_core_top` with an MMCM (50 MHz core clock),
 reset synchronisation, the UART pin, LEDs and the 7-segment driver.
@@ -310,8 +326,9 @@ Yosys estimate for `fpga_top` (`make synth-fpga`), 2026-11-12:
 | BRAM36 | 78.5 | 135 | 58% |
 | DSP48 | 16 | 240 | 7% |
 
-These are estimates from Yosys. There is no Vivado utilisation or timing
-report yet, and the design has not run on a board.
+These are estimates from Yosys for the bus build, kept for reference only.
+There is no Vivado utilisation or timing report, and the design has not run
+on a board.
 
 ## 7. Performance
 
@@ -342,10 +359,78 @@ the per-feature ablation are in `results/`.
 * The two multi-thread benchmarks: mt-matmul runs 2 to 5 % faster than on
   the bus on every NoC build, mt-vvadd at 0.86 to 0.92 of the bus speed.
 
+**Parallel speed-up** (`make scaling`, `results/2026-11-21/scaling.txt`).
+The same multi-thread program on 1, 2 and 4 cores; the 1-core run is the
+no-contention baseline. On 4 cores, against 1 core of the same build:
+
+| Benchmark | Bus | NoC, 1 home | NoC, 4 homes, 256-bit |
+|---|---|---|---|
+| mt-vvadd | 2.85x | 2.59x | 2.76x |
+| mt-matmul | 3.28x | 3.41x | 3.49x |
+| mt-memcpy | 3.70x | 3.68x | 3.80x |
+
+mt-vvadd scales least: it does little work per miss, so on four cores it
+spends most of its time waiting for lines. mt-matmul reuses its data, and it
+scales better on the NoC than on the bus: a NoC home works on several misses
+at once, while the bus serves one at a time.
+
+**More cores** (`make mesh-scaling`, `results/2026-11-21/mesh_scaling.txt`).
+The SoC's NoC is 2x2, so 9 and 16 cores are studied with a model,
+`verif/scaling/tb_mesh_scaling.v`: real K x K meshes of XY wormhole routers
+(three networks, as in the SoC), a directory home and L2 bank at every node,
+and one atomic bus, with the miss times calibrated on the 4-core RTL numbers
+of `make traffic`. Each core is a blocking L1 that misses after a random
+pause.
+
+* The bus carries at most about 167 misses per 1000 cycles whatever the
+  core count, so its latency grows with the load: about 54 cycles at 9
+  cores and 96 at 16 under full load.
+* The mesh grows with the core count, because each node adds a home and
+  more links: under full load it carries 1.6x the bus at 4 cores, 3.2x at
+  9 and 5.1x at 16 (private lines), with the latency growing only from 14
+  to 18 cycles as the average distance grows.
+* With shared lines (half the misses answered by another core's cache) the
+  mesh gains almost as much (1.5x, 2.9x, 4.5x).
+* On one hot line every miss goes to the same home, which serves one at a
+  time, so the mesh stops near 200 per 1000 cycles (1.2x the bus) at any
+  size. Spreading hot data over homes matters more than the network.
+* At light load (one miss per 128 cycles per core) the bus is quicker at 4
+  and 9 cores; at 16 cores it is already the bottleneck.
+
+The model leaves out what both interconnects share (L2 misses to memory,
+write-backs) and keeps the bus as fast at 16 cores as at 4, although a real
+bus gets slower as it gets longer; that flatters the bus at 16 cores.
+
 ## 8. Verification
 
-See the README for the commands. In short: block and core testbenches,
-riscv-tests (rv32ui, rv32um, rv32ua) on one core and on the SoC, C programs on
-the SoC and on a board-level model, a random coherence test with a reference
-memory and a single-writer check every cycle, and a mutation check of that
-test.
+See the README for the commands. In short:
+
+* block and core testbenches, and riscv-tests (rv32ui, rv32um, rv32ua) on one
+  core and on the full SoC;
+* C programs on the SoC (and through the board wrapper), each checking its
+  own UART output, including litmus tests and `sw/ldorder` for load order;
+* a constrained-random coherence test (`make coh-random`) with a reference
+  memory and a single-writer check every cycle, on the bus and NoC builds;
+* mutation tests: the checks must fail on designs with one planted bug (7
+  coherence bugs on the bus, 9 on the NoC, 2 load/store ordering bugs in the
+  core: `make coh-mutants`, `make core-mutants`);
+* functional coverage (`make coverage`): 44 bins of coherence events,
+  sampled during the random test. Every bin that applies to a build is hit
+  (37 on the bus, 41 on the NoC), and two illegal bins stay at zero
+  (`results/2026-11-21/coverage.txt`);
+* assertions in simulation (`ERROR SVA ...` stops the run): the NoC blocks
+  (section 4.2); in the L1 data cache (a lookup never hits both ways; the
+  snoop and the CPU never write the same state entry in one cycle; on the
+  bus, a write-back is only sent for a line still in M); in the snoop
+  controller (at most one cache answers HITM);
+* a formal proof (`make formal`) of the bus arbiter with Yosys's SAT solver
+  and induction: at most one grant, the grant matches `current_owner`, a
+  grant goes only to a requester and in round-robin order, and no core waits
+  for more than three grants to others. The proof also runs on a copy with
+  the round-robin order broken, which must fail. The rest of the design is
+  too large for this solver; it is covered by the random test, the mutants
+  and the coverage bins above.
+
+The random test with more counter traffic found bug 24 (a stale write-back
+on the bus, [bugs.md](bugs.md)); the coverage bin "snoop takes the victim
+before write-back" now shows that case is exercised in every run.

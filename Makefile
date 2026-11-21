@@ -8,21 +8,21 @@
 #   make bench       riscv-tests benchmarks on the 4-core SoC (Verilator; riscv-tests submodule)
 #   make compare-ic  The benchmarks on the bus and four NoC builds (P6 table)
 #   make traffic     Latency/throughput under synthetic load, bus vs NoC builds (P6)
+#   make scaling     Speed-up of the parallel benchmarks on 1, 2 and 4 cores, bus and NoC
+#   make mesh-scaling  Bus vs mesh at 4, 9 and 16 cores (calibrated model)
 #   make ablation    The benchmarks on builds with one feature off (prediction, OoO issue, MESI E state)
 #   make coh-random  Constrained-random coherence test of the memory system (SEEDS, OPS)
-#   make coh-mutants Check that coh-random fails on six designs with injected coherence bugs
-#   make sw          Build the demo programs in sw/ (hello, parsum, atomics, prodcons, litmus, memstress, selfmod)
+#   make coh-mutants Check that coh-random fails on each design with an injected coherence bug
+#                    (7 on the bus, 9 with NOC=1)
+#   make core-mutants  Check that the core tests fail on two LSQ ordering bugs
+#   make formal      Formal proof of the bus arbiter (Yosys SAT, induction)
+#   make coverage    Functional coverage of the coherence protocol, bus and NoC (build/coverage.txt)
+#   make sw          Build the demo programs in sw/ (hello, parsum, atomics, prodcons, litmus, memstress, selfmod, ldorder)
 #   make soc-run PROG=hello   Run a demo program on the full SoC (UART printed)
-#   make fpga-sim PROG=hello  Board-level simulation of fpga_top (UART decoded from the pin)
-#   make fpga PROG=hello      Vivado bitstream for the Nexys A7-100T (CLKOUT_DIV=20: 50 MHz)
-#   make program              Load build/vivado/fpga_top.bit onto the board
 #   make lint        Verilator lint of the core (errors fail; warnings listed)
 #   make lint-soc    Verilator lint of quad_core_top (errors fail)
 #   make synth       Yosys generic synthesis of one core (fast check, used by CI)
 #   make synth-soc   Yosys generic synthesis of quad_core_top
-#   make synth-fpga  Yosys synth_xilinx of fpga_top (about 15 min), prints LUT/FF/BRAM
-#                    use against the XC7A100T
-#   make synth-fpga-core  Artix-7 LUT/FF estimate for one core (used by results)
 #   make results     Regenerate docs/results/index.html (riscv-tests submodule)
 #   make animate     MESI terminal walkthrough + animated GIF
 #   make gui         Interactive MESI animation window
@@ -30,9 +30,18 @@
 #   make regress     Everything except the slow synthesis and benchmarks (riscv-tests submodule)
 #   make clean       Remove build outputs
 #
+#   FPGA (on hold, not part of the evaluated results):
+#   make fpga-sim PROG=hello  Board-level simulation of fpga_top (UART decoded from the pin)
+#   make fpga PROG=hello      Vivado bitstream for the Nexys A7-100T (CLKOUT_DIV=20: 50 MHz)
+#   make program              Load build/vivado/fpga_top.bit onto the board
+#   make synth-fpga  Yosys synth_xilinx of fpga_top (about 15 min), prints LUT/FF/BRAM
+#                    use against the XC7A100T
+#   make synth-fpga-core  Artix-7 LUT/FF estimate for one core (used by results)
+#
 #   Add NOC=1 to any target for the 2x2 mesh NoC + directory build instead of
-#   the snooping bus (NOC_BANKS=4: a directory home at every node). Outputs go
-#   to build/noc1/ (build/noc4/), e.g.  make regress NOC=1   make bench NOC=1
+#   the snooping bus (NOC_BANKS=4: a directory home at every node; NOC_FLIT=128
+#   or 256: wider links). Outputs go to build/noc1/, build/noc4/, build/noc4_f256/
+#   and so on, e.g.  make regress NOC=1   make bench NOC=1
 #
 # Tools come from PATH. On Windows override, e.g.
 #   make IVERILOG=C:/iverilog/bin/iverilog.exe VVP=C:/iverilog/bin/vvp.exe sim
@@ -74,7 +83,7 @@ endif
 
 TESTS = mesi arbiter cache core dep corner quad noc
 
-.PHONY: traffic compare-ic all sim $(addprefix sim-,$(TESTS)) sim-repro isa synth soc-isa bench ablation coh-random coh-mutants bench-check regress sw soc-run fpga-sim fpga program lint lint-soc synth-soc synth-fpga results animate gui clean help
+.PHONY: formal traffic mesh-scaling scaling coverage core-mutants compare-ic all sim $(addprefix sim-,$(TESTS)) sim-repro isa synth soc-isa bench ablation coh-random coh-mutants bench-check regress sw soc-run fpga-sim fpga program lint lint-soc synth-soc synth-fpga results animate gui clean help
 
 all: sim
 
@@ -158,6 +167,23 @@ compare-ic:
 	$(check_rvt)
 	sh scripts/compare_ic.sh $(abspath $(RISCV_TESTS))
 
+# Parallel speed-up: the multi-thread benchmarks on 1, 2 and 4 cores, bus and
+# NoC builds (build/scaling.txt; see scripts/scaling.sh)
+scaling:
+	$(check_rvt)
+	sh scripts/scaling.sh $(abspath $(RISCV_TESTS))
+
+# Formal proof of the bus arbiter with Yosys (properties in bus_arbiter.v under
+# `ifdef FORMAL), plus a broken copy that must fail (see scripts/run_formal.sh)
+formal:
+	sh scripts/run_formal.sh build/formal
+
+# Bus vs mesh at 4, 9 and 16 cores: a calibrated model, since the SoC's NoC
+# is 2x2 (build/mesh_scaling/mesh_scaling.txt; see verif/scaling/tb_mesh_scaling.v)
+mesh-scaling:
+	mkdir -p build/mesh_scaling
+	sh scripts/mesh_scaling.sh build/mesh_scaling | tee build/mesh_scaling/mesh_scaling.txt
+
 # P6: latency and throughput under synthetic load, bus vs NoC builds
 # (build/traffic/traffic.txt; see verif/traffic/tb_traffic.v)
 traffic:
@@ -181,7 +207,16 @@ coh-random: $(OUT_DIR)/coh_random.vvp
 	    grep -q 'RESULT PASS' $(OUT_DIR)/coh_random_$$s.log || exit 1; \
 	done
 
-# The random test must fail on each of six designs with a deliberate coherence bug
+# Functional coverage of the coherence protocol: coh-random on the bus and two
+# NoC builds, coverage bins merged into one report (build/coverage.txt)
+coverage:
+	$(MAKE) coh-random SEEDS="$(SEEDS)" OPS=$(OPS)
+	$(MAKE) coh-random NOC=1 SEEDS="$(SEEDS)" OPS=$(OPS)
+	$(MAKE) coh-random NOC=1 NOC_BANKS=4 SEEDS="$(SEEDS)" OPS=$(OPS)
+	$(PYTHON) scripts/coverage_report.py bus='build/coh_random_*.log' noc1='build/noc1/coh_random_*.log' \
+	    noc4='build/noc4/coh_random_*.log' | tee build/coverage.txt
+
+# The random test must fail on each design with a deliberate coherence bug
 coh-mutants:
 	sh scripts/coh_mutants.sh
 

@@ -35,18 +35,44 @@ jobs:
         run: |
           make soc-run PROG=hello && make soc-run PROG=parsum
           make soc-run PROG=atomics && make soc-run PROG=prodcons && make soc-run PROG=litmus
-          make soc-run PROG=memstress && make soc-run PROG=selfmod
+          make soc-run PROG=memstress && make soc-run PROG=selfmod && make soc-run PROG=ldorder
       - name: Constrained-random coherence test (3 seeds)
         run: make coh-random
-      - name: Coherence test must catch six injected bugs
+      - name: Coherence test must catch seven injected bugs
         run: make coh-mutants
-      - name: Board-level simulation of the FPGA top (UART decoded from the pin)
+      - name: Core tests must catch two LSQ ordering bugs
+        run: make core-mutants
+      - name: System test through the board wrapper (UART decoded from the pin; FPGA itself on hold)
         run: make fpga-sim PROG=hello && make fpga-sim PROG=parsum
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: isa-summary
           path: build/isa/summary.txt
+
+  noc:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true   # third_party/riscv-tests, pinned
+      - name: Install tools
+        run: sudo apt-get update && sudo apt-get install -y iverilog gcc-riscv64-unknown-elf python3
+      - name: Demo programs on the NoC + directory build
+        run: |
+          make soc-run NOC=1 PROG=hello && make soc-run NOC=1 PROG=atomics
+          make soc-run NOC=1 PROG=litmus && make soc-run NOC=1 PROG=ldorder
+      - name: Constrained-random coherence test, one home and four homes
+        run: make coh-random NOC=1 && make coh-random NOC=1 NOC_BANKS=4
+      - name: Coherence test must catch nine injected bugs (NoC)
+        run: make coh-mutants NOC=1
+      - name: Functional coverage, bus and NoC (fails on an illegal event)
+        run: make coverage
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage
+          path: build/coverage.txt
 
   synth:
     runs-on: ubuntu-24.04
@@ -58,6 +84,8 @@ jobs:
         run: make lint
       - name: Generic synthesis
         run: make synth
+      - name: Formal proof of the bus arbiter
+        run: make formal
       - uses: actions/upload-artifact@v4
         if: always()
         with:
