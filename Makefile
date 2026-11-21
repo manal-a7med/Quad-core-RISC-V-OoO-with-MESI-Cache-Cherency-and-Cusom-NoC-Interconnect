@@ -185,6 +185,11 @@ coh-random: $(OUT_DIR)/coh_random.vvp
 coh-mutants:
 	sh scripts/coh_mutants.sh
 
+# The memory-ordering programs must fail on designs with a deliberate bug in
+# the load/store unit (bus build)
+core-mutants: sw
+	sh scripts/core_mutants.sh
+
 $(OUT_DIR)/coh_random.vvp: $(SOC_RTL) verif/coherence/tb_coh_random.v | $(OUT_DIR)
 	$(IVERILOG) $(INC_FLAGS) -DNO_UART_ECHO -o $@ $(SOC_RTL) verif/coherence/tb_coh_random.v
 
@@ -268,7 +273,7 @@ bench-check:
 
 # Full functional regression: every check that needs no Vivado and no
 # Verilator benchmark run. Stops at the first failure.
-REGRESS_PROGS = hello parsum atomics prodcons litmus memstress selfmod
+REGRESS_PROGS = hello parsum atomics prodcons litmus memstress selfmod ldorder
 regress:
 	$(MAKE) sim
 	$(MAKE) sim-repro
@@ -280,6 +285,7 @@ regress:
 	    echo "fpga-sim $$p: PASS"; done
 	$(MAKE) coh-random
 	$(MAKE) coh-mutants
+	$(MAKE) core-mutants
 	@echo "regress: all checks passed"
 
 clean:

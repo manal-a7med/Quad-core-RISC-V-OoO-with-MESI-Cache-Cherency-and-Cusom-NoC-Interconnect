@@ -84,6 +84,49 @@ mscratch, mepc, mcause, mtval, mip, mhartid, mvendorid, marchid, mimpid,
 mcycle and minstret (64-bit, with the user read-only aliases). Traps: illegal
 instruction, ECALL, EBREAK. There are no interrupts.
 
+### 2.1 Memory ordering, and why no load replay is needed
+
+An out-of-order core that lets loads run ahead of each other has a known
+problem in a multicore system. Suppose a younger load reads a line, then
+another core writes it, then an older load to the same address reads the new
+value. The two loads then see the writes in the wrong order. Cores with a
+strong memory model (x86, TSO) must also keep loads to *different* addresses
+in order, so they watch for snoops and squash and replay any load that read
+a line which was invalidated before the load committed. The proposal planned
+such a hook in the load/store queue.
+
+This core does not need one. RISC-V uses the weaker RVWMO model, where loads
+to different addresses may be performed in any order unless a FENCE, an
+atomic or a dependency says otherwise. Among loads, only those to the **same
+bytes** must stay in program order (the CoRR rule). The core keeps these
+rules with four simple properties instead of a replay path:
+
+1. **Loads of the same bytes are performed oldest first.** A queued load
+   waits while any older load or store overlapping its bytes has not been
+   performed (`ld_blocked` in `load_store_unit.v`). The queue picks loads by
+   slot number, and slot order is not age order, so this check is what
+   enforces CoRR.
+2. **The data cache serves one access at a time**, so "performed" is a single
+   point in time for each load, and coherence gives one order of writes per
+   line.
+3. **Stores reach the cache only after commit, in program order.** No other
+   core can see a speculative store, and a squashed load leaves no trace
+   except a cache fill.
+4. **FENCE, AMOs, LR/SC and CSR accesses run alone in an empty ROB**, so
+   they order everything before them against everything after them.
+   Address and data dependencies hold because an instruction issues only when
+   its operands are ready.
+
+**How it is tested.** `sw/litmus` runs the classic litmus tests (MP, SB,
+CoRR, LB, IRIW, with and without fences) on four harts and checks that no
+forbidden outcome appears. `sw/ldorder` builds the one situation where rule 1
+matters: two loads of the TIMER register wait in the queue with the younger
+one in the lower slot, and the value read later must be the larger one.
+`make core-mutants` removes rule 1 from a copy of the load/store unit and
+checks that `ldorder` then fails (it does, in all 32 rounds), and removes the
+store half of the check and checks that `memstress` fails. Bug 21 in
+[bugs.md](bugs.md) was a hole in rule 1 that the litmus tests found.
+
 ## 3. Caches (`rtl/cache`)
 
 All lines are 32 bytes (8 words).
@@ -247,6 +290,7 @@ single-writer assertion at the grant, before any cache misbehaves.
 | 0x8000_000C | LEDS (16 board LEDs) |
 | 0x8000_0010 | HEX (8-digit 7-segment display) |
 | 0x8000_0014 | BOOT (cleared by reset, set by hart 0 after start-up) |
+| 0x8000_0018 | TIMER (read: free-running cycle counter) |
 
 All harts reset to PC 0. Start-up code reads `mhartid`; hart 0 clears `.bss`
 and sets BOOT, the others wait for it.
