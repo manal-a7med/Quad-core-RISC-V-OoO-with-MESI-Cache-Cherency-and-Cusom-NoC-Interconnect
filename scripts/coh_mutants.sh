@@ -2,8 +2,8 @@
 # Mutation check of the random coherence test: each mutant is a copy of the
 # design with one deliberate coherence bug. The test must fail on every one.
 # Usage: scripts/coh_mutants.sh [ops per port, default 300]
-# NOC=1 [NOC_BANKS=4] [NOC_FLIT=128] in the environment: the NoC + directory build, with two
-# more mutants in the directory home.
+# NOC=1 [NOC_BANKS=4] [NOC_FLIT=128] in the environment: the NoC + directory build, with
+# three more mutants in the directory home (and without the bus-only write-back mutant).
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 OPS=${1:-300}
 L1=$ROOT/rtl/cache/l1_dcache.v
@@ -56,6 +56,11 @@ mutant sc_no_resv l1 's/wire sc_fail      = is_sc \&\& !resv_ok;/wire sc_fail = 
   "SC succeeds without a reservation"
 mutant resv_survives l1 's/resv_valid <= 1.b0;                         \/\/ line taken by another core/;/' \
   "the LR reservation survives a snoop invalidation"
+
+if [ -z "$NOC" ]; then
+mutant wb_after_snoop l1 's/if (pend_state != M) begin/if (1'"'"'b0) begin/' \
+  "a dirty victim is written back after a snoop took it (stale data in the L2)"
+fi
 
 if [ -n "$NOC" ]; then
 mutant dir_getm_keeps_sharers dh 's/(s_getm || s_upg) ? s_oth : 4.b0000;/(s_getm || s_upg) ? (s_oth \& s_owner) : 4'"'"'b0000;/' \

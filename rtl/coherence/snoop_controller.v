@@ -182,4 +182,13 @@ module snoop_controller (
     end
 `endif
 
+`ifdef SIM
+    // At most one cache answers a snoop with modified data (single writer)
+    wire [2:0] n_hitm = (snoop_mask[0] && snoop_resp[1:0] == `SNOOP_HITM) + (snoop_mask[1] && snoop_resp[3:2] == `SNOOP_HITM) +
+                        (snoop_mask[2] && snoop_resp[5:4] == `SNOOP_HITM) + (snoop_mask[3] && snoop_resp[7:6] == `SNOOP_HITM);
+    always @(posedge clk) if (rst_n && state == COLLECT_RESPONSES)
+        assert (n_hitm <= 3'd1)
+        else begin $display("ERROR SVA %m: %0d caches hold the line modified (t=%0t)", n_hitm, $time); $fatal(1); end
+`endif
+
 endmodule

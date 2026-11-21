@@ -2,8 +2,8 @@
 
 Bugs 1 to 18 were found by a design review of the imported code (11 Nov 2026):
 "C" = confirmed by the repro testbench `review/tb_repro.v` (`make sim-repro`),
-"R" = found by reading the code. Bugs 19 to 23 were found later by tests.
-All 23 are fixed or shown to be unreachable.
+"R" = found by reading the code. Bugs 19 to 24 were found later by tests.
+All 24 are fixed or shown to be unreachable.
 
 ## Core
 
@@ -42,6 +42,7 @@ All 23 are fixed or shown to be unreachable.
 | 21 | Two loads of the same address could be performed out of order in a corner case (CoRR) | Litmus tests | P3 |
 | 22 | A store issued into a full LSQ was silently dropped | qsort and rsort timing out | P4 |
 | 23 | A load waiting for older stores deadlocked while issue was frozen | `sw/memstress` | P4 |
+| 24 | Bus build: a snoop could take a dirty victim line while the L1 waited to write it back; the late write-back then put old data over newer data in the L2 | `make coh-random` with more counter traffic, and the coverage bin for this case | 21 Nov (the L1 skips the write-back when the line is no longer M; mutant `wb_after_snoop`) |
 
 Bugs in the new NoC code were found and fixed while it was written; the
 mutation tests (`make coh-mutants`) show that the checks catch the important
