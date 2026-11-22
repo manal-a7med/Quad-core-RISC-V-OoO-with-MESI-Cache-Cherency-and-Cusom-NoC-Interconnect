@@ -14,7 +14,7 @@
 // a line belongs to port i % 4, so every line is falsely shared by all four
 // ports). An owner writes {owner + 1, sequence number} with an increasing
 // sequence number. Two more lines hold an amoadd counter and an LR/SC
-// counter shared by all ports.
+// counter shared by all ports, and each port has a counter line of its own.
 //
 // Checks (each load, then a final sweep):
 //   * the value belongs to the word (owner tag) or is still 0
@@ -29,6 +29,9 @@
 //   * at the end every port reads every word and sees the owner's last store
 //   * every cycle, for every line used: if one L1D holds it in M or E, no
 //     other L1D holds it at all (single writer / multiple readers, SWMR)
+//
+// Functional coverage (coh_cov.vh): one counter per protocol event, printed
+// as COV lines at the end; make coverage merges several runs.
 //
 // Usage: vvp tb_coh_random.vvp [+seed=N] [+ops=N]   (ops per port, default 2000)
 // ============================================================================
@@ -45,6 +48,7 @@ module tb_coh_random;
 
   localparam NSETS = 4, NTAGS = 6, NLINES = NSETS * NTAGS, NWORDS = NLINES * 8;
   localparam [31:0] AMO_CTR = 32'h0000_3100, LRSC_CTR = 32'h0000_3140;
+  localparam [31:0] OWN_CTR = 32'h0000_3200;   // + 32 * port: one counter line per port
   localparam MAXV = 65536;
 
   function [31:0] word_addr(input integer w);
@@ -107,10 +111,20 @@ module tb_coh_random;
 
   // Bus and memory statistics
   integer n_rd, n_rdx, n_upgr, n_flush, n_hitm, n_l2wb, n_l2rd;
-  initial begin n_rd = 0; n_rdx = 0; n_upgr = 0; n_flush = 0; n_hitm = 0; n_l2wb = 0; n_l2rd = 0; end
+  integer n_lat, lat_sum;                  // L1 request latency: request raised -> acknowledge
+  integer lat_start [0:3];
+  initial begin n_rd = 0; n_rdx = 0; n_upgr = 0; n_flush = 0; n_hitm = 0; n_l2wb = 0; n_l2rd = 0;
+                n_lat = 0; lat_sum = 0; end
   genvar g;
+`include "coherence/coh_cov.vh"
   generate for (g = 0; g < 4; g = g + 1) begin : stat
+    reg busy_r;
+    initial busy_r = 1'b0;
     always @(posedge clk) if (rst_n) begin
+      if (dut.core_gen[g].u_l1d.bus_req && !busy_r) begin busy_r = 1'b1; lat_start[g] = $time; end
+      if (dut.core_gen[g].u_l1d.bus_ack) begin
+        busy_r = 1'b0; n_lat = n_lat + 1; lat_sum = lat_sum + ($time - lat_start[g]) / 10 + 1;
+      end
       if (dut.core_gen[g].u_l1d.bus_ack)
         case (dut.core_gen[g].u_l1d.bus_cmd)
           `BUS_READ:  n_rd    = n_rd + 1;
@@ -175,7 +189,9 @@ module tb_coh_random;
     reg        req = 0, wr = 0;
     reg [31:0] addr = 0, wdata = 0, rdata;
     reg [3:0]  amo = 0;
-    integer    seed, n, kind, w, i, idle, cyc;
+    integer    seed, seedb, n, kind, w, i, idle, cyc;
+    reg [31:0] ctr_seen = 0, lastc;           // amoadd counter as this port last saw it
+    reg [31:0] own_cnt = 0;                   // amoadds on this port's own counter
     reg [27:0] s, min_s;
     reg [31:0] v;
 
@@ -207,6 +223,7 @@ module tb_coh_random;
     initial begin
       seed = 0;
       #2 seed = seed0 * 4 + g + 1;
+      seedb = seed + 1000;                     // separate stream: the main traffic stays the same
       @(posedge rst_n);
       repeat (300) @(posedge clk);                // L2 clears its set records
       for (n = 0; n < ops; n = n + 1) begin
@@ -225,8 +242,38 @@ module tb_coh_random;
           access(word_addr(w), 1, {g[3:0] + 4'd1, s}, `AMO_NONE);
           done_seq[w] = s;
         end else if (kind < 92) begin              // amoadd on the shared counter
+          // One time in three, read the counter first, so the amoadd also
+          // runs on a line held in E or S. The value read may not go
+          // backwards, and the amoadd must return at least that value.
+          lastc = 0;
+          if ($unsigned($random(seedb)) % 8 == 0) begin
+            // A counter only this port uses: load (the line comes in E, or
+            // is still M), then amoadd, which must return exactly the count
+            access(OWN_CTR + g * 32, 0, 0, `AMO_NONE);
+            access(OWN_CTR + g * 32, 0, 1, `AMO_ADD);
+            checks = checks + 1;
+            if (rdata != own_cnt) begin
+              errors = errors + 1;
+              if (errors <= 10) $display("ERROR own counter: port %0d amoadd returned %0d, expected %0d", g, rdata, own_cnt);
+            end
+            own_cnt = own_cnt + 1;
+          end
+          if ($unsigned($random(seedb)) % 3 == 0) begin
+            access(AMO_CTR, 0, 0, `AMO_NONE);
+            checks = checks + 1;
+            if (rdata < ctr_seen || rdata > amo_done + 4) begin
+              errors = errors + 1;
+              if (errors <= 10) $display("ERROR counter load: port %0d read %0d (last %0d, %0d amoadds done)", g, rdata, ctr_seen, amo_done);
+            end
+            ctr_seen = rdata; lastc = rdata;
+          end
           access(AMO_CTR, 0, 1, `AMO_ADD);
           checks = checks + 1;
+          if (rdata < lastc) begin
+            errors = errors + 1;
+            if (errors <= 10) $display("ERROR amoadd: port %0d got %0d after reading %0d", g, rdata, lastc);
+          end
+          ctr_seen = rdata + 1;
           if (rdata >= MAXV || amo_seen[rdata]) begin
             errors = errors + 1;
             if (errors <= 10) $display("ERROR amoadd: port %0d got old value %0d twice", g, rdata);
@@ -274,8 +321,11 @@ module tb_coh_random;
     wait (port_done == 4'h0);
     $display("coherence random test: seed %0d, %0d ops per port, %0d cycles", seed0, ops, cycles);
     $display("  checks %0d, amoadd %0d, SC ok %0d / failed %0d; SWMR checks %0d", checks, amo_done, sc_ok, sc_fail, swmr_checks);
+    $display("  L1 requests: %0d, average latency %0d.%0d cycles (request to acknowledge)",
+             n_lat, lat_sum / (n_lat ? n_lat : 1), (lat_sum * 10 / (n_lat ? n_lat : 1)) % 10);
     $display("  bus: BusRd %0d, BusRdX %0d, BusUpgr %0d, Flush %0d, HITM data %0d; L2->memory: writebacks %0d, reads %0d",
              n_rd, n_rdx, n_upgr, n_flush, n_hitm, n_l2wb, n_l2rd);
+    cov_report;
     if (errors == 0) $display("RESULT PASS cycles=%0d", cycles);
     else             $display("RESULT FAIL errors=%0d", errors);
     $finish;

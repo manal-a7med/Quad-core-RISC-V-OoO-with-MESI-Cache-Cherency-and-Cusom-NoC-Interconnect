@@ -2,31 +2,47 @@
 # Makefile: Quad-Core Out-of-Order RISC-V Processor with MESI coherence
 # =============================================================================
 #   make sim         Run all RTL testbenches (fails if any check fails)
-#   make sim-<name>  Run one testbench (mesi arbiter cache core dep corner quad repro)
+#   make sim-<name>  Run one testbench (mesi arbiter cache core dep corner quad noc repro)
 #   make isa         rv32ui, rv32um and rv32ua riscv-tests and system tests on one core (riscv-tests submodule)
 #   make soc-isa     the same programs on the full 4-core SoC with caches (after make isa)
 #   make bench       riscv-tests benchmarks on the 4-core SoC (Verilator; riscv-tests submodule)
+#   make compare-ic  The benchmarks on the bus and four NoC builds (P6 table)
+#   make traffic     Latency/throughput under synthetic load, bus vs NoC builds (P6)
+#   make scaling     Speed-up of the parallel benchmarks on 1, 2 and 4 cores, bus and NoC
+#   make mesh-scaling  Bus vs mesh at 4, 9 and 16 cores (calibrated model)
 #   make ablation    The benchmarks on builds with one feature off (prediction, OoO issue, MESI E state)
 #   make coh-random  Constrained-random coherence test of the memory system (SEEDS, OPS)
-#   make coh-mutants Check that coh-random fails on six designs with injected coherence bugs
-#   make sw          Build the demo programs in sw/ (hello, parsum, atomics, prodcons, litmus, memstress, selfmod)
+#   make coh-mutants Check that coh-random fails on each design with an injected coherence bug
+#                    (7 on the bus, 9 with NOC=1)
+#   make core-mutants  Check that the core tests fail on two LSQ ordering bugs
+#   make formal      Formal proof of the bus arbiter (Yosys SAT, induction)
+#   make coverage    Functional coverage of the coherence protocol, bus and NoC (build/coverage.txt)
+#   make sw          Build the demo programs in sw/ (hello, parsum, atomics, prodcons, litmus, memstress, selfmod, ldorder)
 #   make soc-run PROG=hello   Run a demo program on the full SoC (UART printed)
-#   make fpga-sim PROG=hello  Board-level simulation of fpga_top (UART decoded from the pin)
-#   make fpga PROG=hello      Vivado bitstream for the Nexys A7-100T (CLKOUT_DIV=20: 50 MHz)
-#   make program              Load build/vivado/fpga_top.bit onto the board
 #   make lint        Verilator lint of the core (errors fail; warnings listed)
 #   make lint-soc    Verilator lint of quad_core_top (errors fail)
 #   make synth       Yosys generic synthesis of one core (fast check, used by CI)
 #   make synth-soc   Yosys generic synthesis of quad_core_top
-#   make synth-fpga  Yosys synth_xilinx of fpga_top (about 15 min), prints LUT/FF/BRAM
-#                    use against the XC7A100T
-#   make synth-fpga-core  Artix-7 LUT/FF estimate for one core (used by results)
 #   make results     Regenerate docs/results/index.html (riscv-tests submodule)
+#   make visuals     Presentation charts in results/visual/ from the committed results (matplotlib)
 #   make animate     MESI terminal walkthrough + animated GIF
 #   make gui         Interactive MESI animation window
 #   make bench-check Compare build/bench/results.txt with the committed reference numbers
 #   make regress     Everything except the slow synthesis and benchmarks (riscv-tests submodule)
 #   make clean       Remove build outputs
+#
+#   FPGA (on hold, not part of the evaluated results):
+#   make fpga-sim PROG=hello  Board-level simulation of fpga_top (UART decoded from the pin)
+#   make fpga PROG=hello      Vivado bitstream for the Nexys A7-100T (CLKOUT_DIV=20: 50 MHz)
+#   make program              Load build/vivado/fpga_top.bit onto the board
+#   make synth-fpga  Yosys synth_xilinx of fpga_top (about 15 min), prints LUT/FF/BRAM
+#                    use against the XC7A100T
+#   make synth-fpga-core  Artix-7 LUT/FF estimate for one core (used by results)
+#
+#   Add NOC=1 to any target for the 2x2 mesh NoC + directory build instead of
+#   the snooping bus (NOC_BANKS=4: a directory home at every node; NOC_FLIT=128
+#   or 256: wider links). Outputs go to build/noc1/, build/noc4/, build/noc4_f256/
+#   and so on, e.g.  make regress NOC=1   make bench NOC=1
 #
 # Tools come from PATH. On Windows override, e.g.
 #   make IVERILOG=C:/iverilog/bin/iverilog.exe VVP=C:/iverilog/bin/vvp.exe sim
@@ -50,9 +66,25 @@ MEM_RTL   = $(sort $(wildcard rtl/memory/*.v))
 IO_RTL    = $(sort $(wildcard rtl/io/*.v))
 SOC_RTL   = $(CORE_RTL) $(CACHE_RTL) $(COH_RTL) $(MEM_RTL) $(IO_RTL) rtl/top/quad_core_top.v
 
-TESTS = mesi arbiter cache core dep corner quad
+# NOC=1: build the SoC with the 2x2 mesh NoC + directory instead of the
+# snooping bus (rtl/noc/). NOC_BANKS=4 puts a directory home at every node;
+# NOC_FLIT=128 or 256 widens the links (default 64-bit flits).
+# Outputs go to build/noc<banks>[_f<flit>]/ so the builds never mix.
+NOC       ?=
+NOC_BANKS ?= 1
+ifneq ($(NOC),)
+NOC_DEFS   = -DNOC -DNOC_BANKS=$(NOC_BANKS) $(if $(NOC_FLIT),-DNOC_FLIT_W=$(NOC_FLIT))
+NOC_TAG    = noc$(NOC_BANKS)$(if $(NOC_FLIT),_f$(NOC_FLIT))
+INC_FLAGS += $(NOC_DEFS) -I rtl/noc
+SOC_RTL   += $(sort $(wildcard rtl/noc/*.v))
+OUT_DIR    = build/$(NOC_TAG)
+VL_CFG    ?= $(NOC_TAG)
+export NOC NOC_BANKS NOC_FLIT
+endif
 
-.PHONY: all sim $(addprefix sim-,$(TESTS)) sim-repro isa synth soc-isa bench ablation coh-random coh-mutants bench-check regress sw soc-run fpga-sim fpga program lint lint-soc synth-soc synth-fpga results animate gui clean help
+TESTS = mesi arbiter cache core dep corner quad noc
+
+.PHONY: visuals formal traffic mesh-scaling scaling coverage core-mutants compare-ic all sim $(addprefix sim-,$(TESTS)) sim-repro isa synth soc-isa bench ablation coh-random coh-mutants bench-check regress sw soc-run fpga-sim fpga program lint lint-soc synth-soc synth-fpga results animate gui clean help
 
 all: sim
 
@@ -84,6 +116,9 @@ sim-dep: | $(OUT_DIR)
 	$(call run,dep,$(CORE_RTL) tb/tb_ooo_dependent_arith.v)
 sim-corner: | $(OUT_DIR)
 	$(call run,corner,$(CORE_RTL) tb/tb_ooo_corner_cases.v)
+# NoC mesh alone: random traffic, no loss, in order per source/destination
+sim-noc: | $(OUT_DIR)
+	$(call run,noc,-I rtl/noc rtl/noc/noc_mesh.v rtl/noc/noc_router.v rtl/noc/noc_tx.v tb/tb_noc_mesh.v)
 sim-quad: | $(OUT_DIR)
 	$(call run,quad,$(SOC_RTL) tb/tb_quad_core.v)
 sim-repro: | $(OUT_DIR)
@@ -101,7 +136,7 @@ isa:
 	$(check_rvt)
 	sh verif/riscv-tests/run.sh $(RISCV_TESTS)
 
-LINT = $(VERILATOR) --lint-only -Wall -Wno-fatal -Irtl/core -Irtl/cache
+LINT = $(VERILATOR) --lint-only -Wall -Wno-fatal -Irtl/core -Irtl/cache $(NOC_DEFS) -Irtl/noc
 lint: | $(OUT_DIR)
 	$(LINT) --top-module riscv_ooo_core $(CORE_RTL) > $(OUT_DIR)/lint.log 2>&1 || true
 	@! grep "^%Error" $(OUT_DIR)/lint.log
@@ -116,16 +151,44 @@ soc-isa:
 
 # Verilator model of the SoC testbench: same cycle counts as iverilog, about
 # 40x faster. Used for the benchmarks.
-VL_FLAGS = --binary --timing -O3 -j 4 -Wno-fatal -Wno-lint -Wno-style -DSIM -Irtl/core -Irtl/cache -Iverif
+VL_FLAGS = --binary --timing --assert -O3 -j 4 -Wno-fatal -Wno-lint -Wno-style -DSIM -Irtl/core -Irtl/cache -Iverif $(NOC_DEFS) -Irtl/noc
 VL_CFG  ?= soc
 VL_DEFS ?=
-$(OUT_DIR)/vl_$(VL_CFG)/Vtb_soc: $(SOC_RTL) verif/soc/tb_soc.v
+$(OUT_DIR)/vl_$(VL_CFG)/Vtb_soc: $(SOC_RTL) verif/soc/tb_soc.v | $(OUT_DIR)
 	$(VERILATOR) $(VL_FLAGS) $(VL_DEFS) --top-module tb_soc -Mdir $(OUT_DIR)/vl_$(VL_CFG) $(SOC_RTL) verif/soc/tb_soc.v > /dev/null
 
 # riscv-tests benchmarks on the SoC (riscv-tests submodule); see scripts/bench.sh
-bench: $(OUT_DIR)/vl_soc/Vtb_soc
+bench: $(OUT_DIR)/vl_$(VL_CFG)/Vtb_soc
 	$(check_rvt)
-	sh scripts/bench.sh $(RISCV_TESTS)
+	SIM=$(CURDIR)/$(OUT_DIR)/vl_$(VL_CFG)/Vtb_soc OUT=$(CURDIR)/$(OUT_DIR)/bench sh scripts/bench.sh $(RISCV_TESTS)
+
+# P6: the benchmarks on the bus and four NoC builds, one table
+# (build/compare_ic.txt; see scripts/compare_ic.sh)
+compare-ic:
+	$(check_rvt)
+	sh scripts/compare_ic.sh $(abspath $(RISCV_TESTS))
+
+# Parallel speed-up: the multi-thread benchmarks on 1, 2 and 4 cores, bus and
+# NoC builds (build/scaling.txt; see scripts/scaling.sh)
+scaling:
+	$(check_rvt)
+	sh scripts/scaling.sh $(abspath $(RISCV_TESTS))
+
+# Formal proof of the bus arbiter with Yosys (properties in bus_arbiter.v under
+# `ifdef FORMAL), plus a broken copy that must fail (see scripts/run_formal.sh)
+formal:
+	sh scripts/run_formal.sh build/formal
+
+# Bus vs mesh at 4, 9 and 16 cores: a calibrated model, since the SoC's NoC
+# is 2x2 (build/mesh_scaling/mesh_scaling.txt; see verif/scaling/tb_mesh_scaling.v)
+mesh-scaling:
+	mkdir -p build/mesh_scaling
+	sh scripts/mesh_scaling.sh build/mesh_scaling | tee build/mesh_scaling/mesh_scaling.txt
+
+# P6: latency and throughput under synthetic load, bus vs NoC builds
+# (build/traffic/traffic.txt; see verif/traffic/tb_traffic.v)
+traffic:
+	sh scripts/traffic_sweep.sh
 
 # The benchmarks on five builds: full, no branch prediction, in-order issue,
 # neither, and MSI instead of MESI (see scripts/ablation.sh)
@@ -145,9 +208,23 @@ coh-random: $(OUT_DIR)/coh_random.vvp
 	    grep -q 'RESULT PASS' $(OUT_DIR)/coh_random_$$s.log || exit 1; \
 	done
 
-# The random test must fail on each of six designs with a deliberate coherence bug
+# Functional coverage of the coherence protocol: coh-random on the bus and two
+# NoC builds, coverage bins merged into one report (build/coverage.txt)
+coverage:
+	$(MAKE) coh-random SEEDS="$(SEEDS)" OPS=$(OPS)
+	$(MAKE) coh-random NOC=1 SEEDS="$(SEEDS)" OPS=$(OPS)
+	$(MAKE) coh-random NOC=1 NOC_BANKS=4 SEEDS="$(SEEDS)" OPS=$(OPS)
+	$(PYTHON) scripts/coverage_report.py bus='build/coh_random_*.log' noc1='build/noc1/coh_random_*.log' \
+	    noc4='build/noc4/coh_random_*.log' | tee build/coverage.txt
+
+# The random test must fail on each design with a deliberate coherence bug
 coh-mutants:
 	sh scripts/coh_mutants.sh
+
+# The memory-ordering programs must fail on designs with a deliberate bug in
+# the load/store unit (bus build)
+core-mutants: sw
+	sh scripts/core_mutants.sh
 
 $(OUT_DIR)/coh_random.vvp: $(SOC_RTL) verif/coherence/tb_coh_random.v | $(OUT_DIR)
 	$(IVERILOG) $(INC_FLAGS) -DNO_UART_ECHO -o $@ $(SOC_RTL) verif/coherence/tb_coh_random.v
@@ -158,8 +235,10 @@ $(OUT_DIR)/coh_random.vvp: $(SOC_RTL) verif/coherence/tb_coh_random.v | $(OUT_DI
 RV_CC      ?= riscv64-unknown-elf-gcc
 RV_OBJCOPY ?= riscv64-unknown-elf-objcopy
 RV_OBJDUMP ?= riscv64-unknown-elf-objdump
-RV_CFLAGS   = -march=rv32ima_zicsr -mabi=ilp32 -O2 -ffreestanding -fno-builtin -nostdlib -nostartfiles \
-              -Wl,--no-warn-rwx-segments -Isw/common -T sw/common/link.ld
+# rv_flags.sh drops what an older GCC/binutils (Ubuntu 22.04) does not accept
+RV_MFLAGS   = $(shell sh scripts/rv_flags.sh $(RV_CC) rv32ima_zicsr)
+RV_CFLAGS   = $(RV_MFLAGS) -mabi=ilp32 -O2 -ffreestanding -fno-builtin -nostdlib -nostartfiles \
+              -Isw/common -T sw/common/link.ld
 SW_PROGS    = $(notdir $(filter-out sw/common sw/bench,$(wildcard sw/*)))
 PROG       ?= hello
 
@@ -217,6 +296,10 @@ results:
 	sh scripts/viz/collect.sh $(RISCV_TESTS)
 	$(PYTHON) scripts/viz/make_results.py build/viz docs/results/index.html
 
+# Presentation charts (PNG) from the committed numbers in results/ (needs matplotlib)
+visuals:
+	$(PYTHON) scripts/viz/make_visuals.py results results/visual
+
 synth-fpga-core: | $(OUT_DIR)
 	$(YOSYS) -q -l $(OUT_DIR)/synth_fpga_core.log -p "read_verilog -DSYNTHESIS -I rtl/core $(CORE_RTL); synth_xilinx -family xc7 -top riscv_ooo_core; stat"
 
@@ -232,7 +315,7 @@ bench-check:
 
 # Full functional regression: every check that needs no Vivado and no
 # Verilator benchmark run. Stops at the first failure.
-REGRESS_PROGS = hello parsum atomics prodcons litmus memstress selfmod
+REGRESS_PROGS = hello parsum atomics prodcons litmus memstress selfmod ldorder
 regress:
 	$(MAKE) sim
 	$(MAKE) sim-repro
@@ -244,6 +327,7 @@ regress:
 	    echo "fpga-sim $$p: PASS"; done
 	$(MAKE) coh-random
 	$(MAKE) coh-mutants
+	$(MAKE) core-mutants
 	@echo "regress: all checks passed"
 
 clean:

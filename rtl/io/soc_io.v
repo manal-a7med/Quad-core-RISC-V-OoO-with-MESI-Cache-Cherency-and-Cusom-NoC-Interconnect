@@ -12,6 +12,10 @@
 //   0x8000_0010  HEX      (RW) value shown on the 8-digit 7-segment display
 //   0x8000_0014  BOOT     (RW) scratch word cleared by reset; hart 0 sets it
 //                               when start-up is done (other harts wait on it)
+//   0x8000_0018  TIMER    (R)  free-running cycle counter (cleared by reset).
+//                               Two reads of it by one hart must never go
+//                               backwards: sw/ldorder uses this to check that
+//                               loads of the same address are done in order.
 // One request is served at a time, round-robin across cores.
 // In simulation each transmitted byte is also printed with $write (unless
 // NO_UART_ECHO is defined, e.g. when a testbench decodes the serial line).
@@ -39,6 +43,10 @@ module soc_io #(parameter integer CLKS_PER_BIT = 434) (
         .tx(uart_txd), .busy(uart_busy));
 
     reg  [31:0] boot;
+    reg  [31:0] timer;
+    always @(posedge clk or negedge rst_n)
+        if (!rst_n) timer <= 32'd0;
+        else        timer <= timer + 32'd1;
     reg  [1:0] rr;            // next core to consider first
     reg        busy;          // serving `cur`
     reg  [1:0] cur;
@@ -95,6 +103,7 @@ module soc_io #(parameter integer CLKS_PER_BIT = 434) (
                               if (wr[cur]) boot <= d;
                               rdata <= boot; ack[cur] <= 1'b1; busy <= 1'b0;
                           end
+                    3'd6: begin rdata <= timer; ack[cur] <= 1'b1; busy <= 1'b0; end
                     default: begin rdata <= 32'd0; ack[cur] <= 1'b1; busy <= 1'b0; end
                 endcase
             end

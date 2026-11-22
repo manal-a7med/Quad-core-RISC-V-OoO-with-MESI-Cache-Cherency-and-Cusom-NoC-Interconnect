@@ -243,6 +243,10 @@ module load_store_unit (
     reg [3:0]  sq_fifo [0:DEPTH-1];
     reg [2:0]  sq_head, sq_tail;
     reg [3:0]  sq_count;
+    // The next head as its own 3-bit value, so it wraps from 7 to 0 in every
+    // simulator (Icarus 11 sized "sq_head + 3'd1" inside the index wider and
+    // read past the end of sq_fifo).
+    wire [2:0] sq_head_nxt = sq_head + 3'd1;
 
     always @(*) begin
         next_load_found    = 1'b0;
@@ -254,7 +258,7 @@ module load_store_unit (
         // Committed stores are written in commit (program) order: oldest first
         // (not counting the one being answered this cycle)
         if (sq_count != (st_done ? 4'd1 : 4'd0)) begin
-            next_store_idx   = sq_fifo[st_done ? sq_head + 3'd1 : sq_head];
+            next_store_idx   = sq_fifo[st_done ? sq_head_nxt : sq_head];
             next_store_found = 1'b1;
         end
         for (nl_i = 0; nl_i < DEPTH; nl_i = nl_i + 1) begin

@@ -17,7 +17,7 @@ git -C "$ROOT" rev-parse --short HEAD > "$V/after/ref"
 
 # Demo program
 CC=riscv64-unknown-elf-gcc
-$CC -march=rv32i -mabi=ilp32 -nostdlib -nostartfiles -Wl,--no-warn-rwx-segments \
+$CC $(sh "$ROOT/scripts/rv_flags.sh" "$CC" rv32i) -mabi=ilp32 -nostdlib -nostartfiles \
     -T "$ROOT/verif/riscv-tests/env/link.ld" "$ROOT/verif/demo/ooo_demo.S" -o "$V/demo.elf"
 riscv64-unknown-elf-objcopy -O binary "$V/demo.elf" "$V/demo.bin"
 od -An -v -tx4 -w4 "$V/demo.bin" | tr -d ' ' > "$V/demo.hex"

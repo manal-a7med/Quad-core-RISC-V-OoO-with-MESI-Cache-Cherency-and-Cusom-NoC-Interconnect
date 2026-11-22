@@ -539,10 +539,11 @@ code {{ font-family: var(--f-mono); font-size: .88em; }}
 <div class="wrap">
 <header>
   <span class="eyebrow">Quad-core RISC-V OoO with MESI · Phases P0 to P4</span>
-  <h1>Correctness, multicore, performance and FPGA results</h1>
-  <p class="muted">Every number on this page comes from a simulation, test or synthesis run on the
-  RTL. The baseline is the imported design; "fixed" is the current core. The multicore, atomics and
-  FPGA sections run the whole four-core SoC.</p>
+  <h1>Correctness, multicore and performance results</h1>
+  <p class="muted">Every number on this page comes from a simulation or test run on the RTL of the
+  bus build. The baseline is the imported design; "fixed" is the current core. The multicore and
+  atomics sections run the whole four-core SoC. The bus vs NoC results are in
+  <code>results/</code> and <code>docs/architecture.md</code> (section 7). FPGA work is on hold.</p>
   <div class="refs">baseline {esc(ref_b)} · fixed {esc(ref_a)} · generated {stamp}</div>
 </header>
 
@@ -566,8 +567,6 @@ code {{ font-family: var(--f-mono); font-size: .88em; }}
       <span class="v">{npass(sisa)}/{len(sisa)}</span></div>
     <div class="stat"><span class="k">Injected coherence bugs caught</span>
       <span class="v">{sum(m["ok"] for m in muts)}/{len(muts)}</span></div>
-    <div class="stat"><span class="k">Whole SoC, LUTs of XC7A100T</span>
-      <span class="v">{soc_lut_pct}</span></div>
   </div>
 </section>
 
@@ -624,7 +623,7 @@ code {{ font-family: var(--f-mono); font-size: .88em; }}
 <section>
   <h2>Four cores running C programs</h2>
   <p>Bare-metal C on the full SoC: four out-of-order cores, private L1 caches, MESI snooping bus,
-  shared L2 and main memory. Each program runs on the board-level model of the FPGA
+  shared L2 and main memory. Each program runs on the board-level model
   (<code>fpga_top</code>, <code>make fpga-sim</code>): the text is decoded from the UART pin as a PC
   terminal would see it, and the display and LEDs are read back from the board pins.
   In <b>hello</b> the harts take turns through a shared variable, so each line also shows a store
@@ -714,25 +713,9 @@ code {{ font-family: var(--f-mono); font-size: .88em; }}
   <div class="chips">{sisa_chips}</div>
 </section>
 
-<section>
-  <h2>Fitting the Nexys A7-100T</h2>
-  <p>The whole design (<code>fpga_top</code>: four cores, caches, bus, 64 KB memory, I/O) mapped to
-  Artix-7 by Yosys <code>synth_xilinx</code>, before place and route. Yosys usually reports more
-  LUTs than Vivado. The first full-SoC estimate was {AREA_FIRST:,} LUTs
-  ({100*AREA_FIRST/CAP["LUT"]:.0f}% of the device); moving the cache data, tags and state into block
-  and LUT RAM and simplifying the bus brought it to {AREA_P3:,} (85%). The performance work of
-  phase P4 (branch prediction, multiply/divide, result holding) added the rest of the figure below.</p>
-  <div class="cols top">
-    <div class="scroll"><table>
-      <thead><tr><th>Resource</th><th class="num">Used</th><th class="num">XC7A100T</th><th class="num">Used</th></tr></thead>
-      <tbody>{area_rows}</tbody></table></div>
-    <div><span class="lbl">LUTs by block</span>{area_bars}</div>
-  </div>
-</section>
-
 <footer>
   <span>Regenerate: <code>sh scripts/viz/collect.sh &lt;riscv-tests checkout&gt; &amp;&amp; python3 scripts/viz/make_results.py</code></span>
-  <span>Sources: <code>review/tb_repro.v</code>, <code>verif/riscv-tests/</code>, <code>verif/demo/ooo_demo.S</code>, <code>verif/trace.vh</code>, <code>sw/</code>, <code>verif/soc/</code>, <code>verif/coherence/</code>, <code>scripts/bench.sh</code>, <code>scripts/ablation.sh</code>, <code>build/synth_fpga.log</code> (<code>make synth-fpga</code>)</span>
+  <span>Sources: <code>review/tb_repro.v</code>, <code>verif/riscv-tests/</code>, <code>verif/demo/ooo_demo.S</code>, <code>verif/trace.vh</code>, <code>sw/</code>, <code>verif/soc/</code>, <code>verif/coherence/</code>, <code>scripts/bench.sh</code>, <code>scripts/ablation.sh</code></span>
 </footer>
 </div>
 """

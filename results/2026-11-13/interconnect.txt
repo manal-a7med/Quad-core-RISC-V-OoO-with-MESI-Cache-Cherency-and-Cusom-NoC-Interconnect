@@ -1,0 +1,18 @@
+# Bus vs NoC (make compare-ic), RTL of the commit that added this file. Same core, L1s, L2 and memory
+# in every build; only the interconnect differs. noc1 = one directory home (node 0), noc4 = a home per node,
+# _f256 = 256-bit flits (a line in one flit) instead of 64-bit. gcc 13.2.0 -O2, riscv-tests benchmarks.
+
+Timed-region cycles per benchmark and build (lower is better);
+in brackets: speed relative to the bus (above 1.00 = faster than the bus).
+
+benchmark                 bus              noc1              noc4         noc1_f256         noc4_f256
+dhrystone              378009     378444 (1.00)     378550 (1.00)     378279 (1.00)     378385 (1.00)
+median                  11109      11165 (0.99)      11169 (0.99)      11144 (1.00)      11148 (1.00)
+multiply                25357      25373 (1.00)      25375 (1.00)      25367 (1.00)      25369 (1.00)
+qsort                  236472     243693 (0.97)     245599 (0.96)     240914 (0.98)     242767 (0.97)
+rsort                  328979     439419 (0.75)     467148 (0.70)     397911 (0.83)     425637 (0.77)
+towers                   6920       6944 (1.00)       6948 (1.00)       6935 (1.00)       6939 (1.00)
+vvadd                    3177       3340 (0.95)       3374 (0.94)       3277 (0.97)       3311 (0.96)
+memcpy                 126648     138680 (0.91)     141678 (0.89)     134165 (0.94)     137163 (0.92)
+mt-vvadd                89404     104179 (0.86)     102504 (0.87)      98839 (0.90)      96917 (0.92)
+mt-matmul               14001      13725 (1.02)      13648 (1.03)      13424 (1.04)      13359 (1.05)

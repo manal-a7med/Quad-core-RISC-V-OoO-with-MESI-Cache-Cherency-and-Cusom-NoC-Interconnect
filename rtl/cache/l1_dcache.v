@@ -56,6 +56,7 @@ module l1_dcache (
     input  wire         bus_ack,
     input  wire         bus_grant,
     input  wire         bus_shared,
+    output wire         bus_way,         // way being filled / written back (directory hint)
 
     // Snoop side
     input  wire [31:0]  snoop_addr,
@@ -124,6 +125,9 @@ module l1_dcache (
 
     wire vic_way   = (st0 == I) ? 1'b0 : (st1 == I) ? 1'b1 : lru_bits[lk_idx];
     wire vic_dirty = ((vic_way ? st1 : st0) == M);
+
+    // A request starts in COMPARE, the cycle pend_way is chosen
+    assign bus_way = (state == ST_COMPARE) ? (cache_hit ? hit_way : vic_way) : pend_way;
 
     wire [1:0]          pend_state = pend_way ? st1 : st0;
     wire [TAG_BITS-1:0] pend_tag   = pend_way ? t1  : t0;
@@ -255,12 +259,27 @@ module l1_dcache (
             ST_WB_READ:
                 next_state = ST_WRITEBACK;
 
-            ST_WRITEBACK: begin
-                bus_req   = 1'b1;
-                bus_cmd   = `BUS_FLUSH;
-                bus_addr  = {pend_tag, idx, 5'b0};
-                if (bus_ack) next_state = ST_WB_PAUSE;
-            end
+            ST_WRITEBACK:
+                // Bus build: a snoop may take the dirty victim while this
+                // cache waits for the bus (BusRdX: another cache now owns
+                // it; BusRd: the data went to the L2 and the line is clean).
+                // The write-back is then dropped: sent later, it would
+                // overwrite newer data in the L2. Snoops happen inside
+                // another core's transaction, so the request is withdrawn
+                // before the arbiter can grant it. (NoC build: the PutM may
+                // already be in the network; the home ignores a PutM from a
+                // core that no longer owns the line.)
+`ifndef NOC
+                if (pend_state != M) begin
+                    next_state = ST_WB_PAUSE;
+                end else
+`endif
+                begin
+                    bus_req   = 1'b1;
+                    bus_cmd   = `BUS_FLUSH;
+                    bus_addr  = {pend_tag, idx, 5'b0};
+                    if (bus_ack) next_state = ST_WB_PAUSE;
+                end
 
             ST_WB_PAUSE:
                 next_state = ST_ALLOCATE;
@@ -449,5 +468,28 @@ module l1_dcache (
             end
         end
     end
+
+    // ------------------------------------------------------------------
+    // Assertions (simulation only; Verilator needs --assert)
+    // ------------------------------------------------------------------
+`ifdef SIM
+    always @(posedge clk) if (rst_n) begin
+        // A line is never held in both ways of a set
+        if (state == ST_COMPARE)
+            assert (!(way0_hit && way1_hit))
+            else begin $display("ERROR SVA %m: line %h in both ways (t=%0t)", {lk_tag, lk_idx, 5'b0}, $time); $fatal(1); end
+        // The CPU and snoop state ports never write one entry in one cycle
+        // (the snoop would silently undo the CPU's write: bug 13)
+        assert (!(s_st_we && c_st_we && s_st_entry == c_st_entry))
+        else begin $display("ERROR SVA %m: CPU and snoop write the state of one line at once (t=%0t)", $time); $fatal(1); end
+`ifndef NOC
+        // Bus build: only a line still in M is written back (a victim that a
+        // snoop took must not overwrite newer data in the L2)
+        if (state == ST_WRITEBACK && bus_ack)
+            assert (pend_state == M)
+            else begin $display("ERROR SVA %m: write-back of a line no longer in M (t=%0t)", $time); $fatal(1); end
+`endif
+    end
+`endif
 
 endmodule

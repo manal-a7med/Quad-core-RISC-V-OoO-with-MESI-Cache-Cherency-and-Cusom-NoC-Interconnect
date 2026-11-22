@@ -9,6 +9,7 @@
 #define LEDS         IO_REG(0x0C)   // 16 board LEDs
 #define HEX          IO_REG(0x10)   // 8-digit 7-segment display
 #define BOOT         IO_REG(0x14)   // cleared by reset, set by hart 0 after start-up
+#define TIMER        IO_REG(0x18)   // read: free-running cycle counter
 
 static inline unsigned read_mcycle(void)   { unsigned x; __asm__ volatile ("csrr %0, mcycle"   : "=r"(x)); return x; }
 static inline unsigned read_minstret(void) { unsigned x; __asm__ volatile ("csrr %0, minstret" : "=r"(x)); return x; }

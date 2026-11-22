@@ -1,0 +1,55 @@
+# Functional coverage (make coverage, here with SEEDS="1 2 3 4" OPS=2000), RTL of the commit that added this file.
+# Bins are defined in verif/coherence/coh_cov.vh and sampled during make coh-random.
+
+Functional coverage of the coherence protocol (make coverage)
+Counts summed over bus: 4 runs, noc1: 4 runs, noc4: 4 runs. '-' = the bin does not apply to that build.
+
+bin  event                                          bus      noc1      noc4
+  0  fill E (BusRd, no other copy)                 3455      3190      2718
+  1  fill S (BusRd, other copies)                 10463     10841     11320
+  2  fill M (BusRdX)                              10254     10274     10355
+  3  upgrade S to M (BusUpgr)                      3614      3882      3756
+  4  upgrade lost the line, refetch (BusRdX)        418       315       350
+  5  store hit E (silent E to M)                    337       266       233
+  6  store hit M                                  11603     11674     11707
+  7  load hit S                                   15204     15762     16392
+  8  load hit E                                    4210      3789      3108
+  9  load hit M                                    2729      2592      2643
+ 10  evict M (write back)                          3381      3502      3467
+ 11  evict E (silent)                               925       817       685
+ 12  evict S (silent)                              6638      6633      6875
+ 13  snoop BusRd hit M (supply, M to S)            6081      6376      6335
+ 14  snoop BusRd hit E (E to S)                    1294      1202      1012
+ 15  snoop BusRd hit S                             5257         -         -
+ 16  snoop BusRd miss                             29186        78       157
+ 17  snoop BusRdX hit M (supply, M to I)           5166      4997      5040
+ 18  snoop BusRdX hit E (E to I)                    878       884       767
+ 19  snoop BusRdX hit S (S to I)                   3479      3506      3744
+ 20  snoop BusRdX miss                            22493       189       959
+ 21  snoop BusUpgr hit S (S to I)                  3947      4168      4050
+ 22  snoop BusUpgr miss                            6895        62       369
+ 23  snoop in the cycle of a CPU lookup            9337      2071      2344
+ 24  snoop to the line of a pending miss           2815       317       378
+ 25  LR sets a reservation                         2565      2565      2565
+ 26  SC succeeds                                   1833      1887      1820
+ 27  SC fails (no reservation)                      732       678       745
+ 28  reservation lost to a snoop                    349       290       366
+ 29  reservation lost to another fill               383       388       379
+ 30  AMO hit M                                     3521      3521      3521
+ 31  AMO hit E                                       17        17        17
+ 32  AMO on S (upgrade first)                       787       824       816
+ 33  AMO miss                                      1495      1472      1521
+ 34  L2 writes a dirty line to memory              5227      5128      5222
+ 35  L2 reads a line from memory                   4629      4253      4393
+ 36  snoop takes the victim before write-back       237       133       143
+ 37  NoC: owner sends line to requester               -     13459     13154
+ 38  NoC: probe held until the line arrives           -       142       286
+ 39  NoC: a home works on 2+ lines at once            -      9385      9532
+ 40  NoC: replaced line kept as a victim              -      7740      7864
+ 41  NoC: PutM write-back accepted                    -      3369      3324
+ 42  ILLEGAL snoop BusUpgr hit M or E                 0         0         0
+ 43  ILLEGAL two caches fill M at once                0         0         0
+
+bus: 37 of 37 bins hit (100%), 0 illegal events
+noc1: 41 of 41 bins hit (100%), 0 illegal events
+noc4: 41 of 41 bins hit (100%), 0 illegal events

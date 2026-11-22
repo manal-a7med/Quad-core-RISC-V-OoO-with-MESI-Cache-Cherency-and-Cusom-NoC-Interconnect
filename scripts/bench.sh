@@ -15,6 +15,7 @@ NCORES=${NCORES:-4}
 MARCH=${MARCH:-rv32ima_zicsr}
 SIM=${SIM:-$ROOT/build/vl_soc/Vtb_soc}
 CC=riscv64-unknown-elf-gcc
+RVF=$(sh "$ROOT/scripts/rv_flags.sh" "$CC" "$MARCH")
 # (spmv also works but is double-precision soft float: 15 M cycles)
 BENCHES=${*:-"dhrystone median multiply qsort rsort towers vvadd memcpy mt-vvadd mt-matmul"}
 [ -x "$SIM" ] || make -C "$ROOT" -s "${SIM#$ROOT/}"
@@ -25,11 +26,11 @@ for b in $BENCHES; do
   src=$RVT/benchmarks/$b
   [ -d "$src" ] || { echo "$b: not found in $RVT/benchmarks"; continue; }
   # The benchmark's main() becomes bench_main(); crt0 and the shim keep theirs
-  CFLAGS="-march=$MARCH -mabi=ilp32 -O2 -fno-common -fno-builtin-printf -ffreestanding -Wno-implicit-function-declaration \
+  CFLAGS="$RVF -mabi=ilp32 -O2 -fno-common -fno-builtin-printf -ffreestanding -Wno-implicit-function-declaration \
           -DNCORES=$NCORES -DPREALLOCATE=1 -I$src -I$ROOT/sw/bench/include -I$RVT/benchmarks/common -I$ROOT/sw/common"
   rm -rf "$OUT/$b.o"; mkdir -p "$OUT/$b.o"
   if ! { for c in "$src"/*.c; do $CC $CFLAGS -Dmain=bench_main -c "$c" -o "$OUT/$b.o/$(basename "$c" .c).o" || exit 1; done &&
-         $CC $CFLAGS -nostdlib -nostartfiles -static -Wl,--no-warn-rwx-segments -T "$ROOT/sw/common/link.ld" \
+         $CC $CFLAGS -nostdlib -nostartfiles -static -T "$ROOT/sw/common/link.ld" \
              "$ROOT/sw/common/crt0.S" "$ROOT/sw/bench/shim.c" "$OUT/$b.o"/*.o -lgcc -o "$OUT/$b.elf"; } > "$OUT/$b.build.log" 2>&1; then
     echo "$b BUILD-FAIL (see $OUT/$b.build.log)" | tee -a "$OUT/results.txt"; continue
   fi

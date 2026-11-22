@@ -1,0 +1,1 @@
+ldorder: 32 rounds, same-address loads in order OK
